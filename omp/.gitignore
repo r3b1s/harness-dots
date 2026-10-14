@@ -1,0 +1,76 @@
+# omp/ is omp's config root (PI_CONFIG_DIR points here), so omp writes all of
+# its runtime state into this tree. Rather than chase that list (it grows every
+# release), ignore everything and allow back only what is authored config.
+# To track something else, add it here or `git add -f` it.
+#
+# Runtime state this keeps out (checked against omp 18.11 source and a live
+# ~/.omp): agent.db, history.db, models.db, skill-descriptions.db, stats.db,
+# autoqa.db (+ -shm/-wal); sessions/, blobs/, terminal-sessions/,
+# custom-session-files/, memories/, managed-skills/ (auto-learned from
+# sessions), idbs/, predict/, cache/; root logs/, run/ (daemon sockets),
+# natives/, plugins/ (except package.json), skillshare/, marketplaces.json,
+# python-env/, browser-profiles/, browser-relay/, puppeteer/, webcache/, wt/,
+# remote/, remote-host/, reports/, security/, ssh-control/, autoresearch/,
+# install-id, last-changelog-version.
+#
+# Credentials this keeps out: secrets.yml, .env, auth-broker.token,
+# auth-gateway.token, secret-placeholder.key, models.yml / models.yaml (provider
+# apiKey values). Allowed files can still hold secrets: config.yml takes
+# credential settings (auth.broker.token, searxng.token, hindsight.apiToken,
+# ...) and mcp.json takes env/headers. Keep those as ${VAR} / $VAR / !command
+# references with the values in the ignored agent/.env.
+
+# Root of omp/: launchers, profile config dirs, the plugin manifest.
+/*
+!/.gitignore
+!/bash/
+!/agent/
+!/profiles/
+/profiles/*/*
+!/profiles/*/agent/
+!/plugins/
+/plugins/*
+!/plugins/package.json
+!/profiles/*/plugins/
+/profiles/*/plugins/*
+!/profiles/*/plugins/package.json
+
+# Inside each agent dir: authored config only.
+/agent/*
+/profiles/*/agent/*
+!.gitkeep
+!config.yml
+!config.yaml
+!mcp.json
+!.mcp.json
+!lsp.json
+!keybindings.*
+!skills.json
+!skills.lock.json
+!AGENTS.md
+!RULES.md
+!SYSTEM.md
+!SYSTEM_TEMPLATE.md
+!APPEND_SYSTEM.md
+!PERSONALITY.md
+!TITLE_SYSTEM.md
+!WATCHDOG.md
+!skills/
+!commands/
+!prompts/
+!rules/
+!hooks/
+!tools/
+!agents/
+!themes/
+!extensions/
+
+# Never, even inside an allowed dir.
+node_modules/
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+*.bak
+*.broken-*

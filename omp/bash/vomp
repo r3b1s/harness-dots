@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# omp vanilla: the default omp profile (omp/agent in this repo), no appended
+# system prompt, with every pi/omp-shared variable scrubbed first. Replaces the
+# old `mise run omp`.
+#
+# Two ways to use this file:
+#   run it     symlink it onto PATH (../../install.sh) and call `vomp ...`
+#   source it  defines the `vomp` function in the current shell
+# omp's own subcommands work as usual: `vomp config list`, `vomp plugin install pkg`.
+
+_OMP_BASH_DIR="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd -P)"
+# shellcheck source=_launch.bash
+source "$_OMP_BASH_DIR/_launch.bash"
+
+vomp() {
+  # --- PROFILE ---------------------------------------------------------------
+  local profile=default   # omp profile name; "default" is omp/agent, else omp/profiles/<name>/agent
+  local prompt=""   # a file in the repo's system-prompts/; "" for none
+  local -a env_extra=()   # extra environment for this profile, e.g. (NAME=value)
+  # ---------------------------------------------------------------------------
+  _omp_launch "$profile" "$prompt" "${env_extra[@]}" -- "$@"
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  vomp "$@"
+fi
