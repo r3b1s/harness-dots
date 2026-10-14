@@ -1,0 +1,30 @@
+# Pi runtime state (pattern matches at any depth under pi/)
+auth.json
+trust.json
+models.json
+models-store.json
+sessions
+npm
+
+# Extension-specific
+mcp-cache.json
+
+# Other
+pi-acp
+commandcode-models.*
+
+## omarchy-specific built-ins
+omarchy
+omarchy-system.json
+diagnose-crash
+
+
+# bin folder? (pi keeps its own bin/ inside a profile)
+bin
+
+# ignore profile-specific settings.json in certain cases
+agent/settings.json
+agent_ctf/settings.json
+agent_producer/settings.json
+
+tool-repair

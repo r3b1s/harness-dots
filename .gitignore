@@ -1,29 +1,21 @@
-# Pi
+# Repo-wide safety net. Harness-specific runtime state is ignored by each
+# harness's own .gitignore (pi/.gitignore, omp/.gitignore).
+
+# Credentials any harness might drop into a config dir
 auth.json
-trust.json
-models.json
-models-store.json
-sessions
-npm
+*.token
+.env
+.env.*
+secrets.yml
+secret-placeholder.key
 
-# Extension-specific
-mcp-cache.json
+# SQLite stores (omp and newer pi: agent.db, history.db, models.db, ...)
+*.db
+*.db-shm
+*.db-wal
 
-# Other
-pi-acp
-commandcode-models.*
+# Harness-specific Project Artifacts
+.claude
 
-## omarchy-specific built-ins
-omarchy
-omarchy-system.json
-diagnose-crash
-
-
-# bin folder?
-bin
-
-# ignore profile-specific settings.json in certain cases
-agent/settings.json
-agent_ctf/settings.json
-
-tool-repair
+# Python bytecode (skills/*/scripts)
+__pycache__/

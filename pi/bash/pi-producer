@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# Pi video producer agent
+#
+# Two ways to use this file:
+#   run it     symlink it onto PATH (../../install.sh) and call `pi-producer ...`
+#   source it  defines the `pi-producer` function in the current shell
+# Pi's own subcommands work as usual: `pi-producer install npm:pkg`, `pi-producer list`.
+
+_PI_BASH_DIR="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd -P)"
+# shellcheck source=_launch.bash
+source "$_PI_BASH_DIR/_launch.bash"
+
+pi-producer() {
+  # --- PROFILE ---------------------------------------------------------------
+  local profile=agent_producer
+  local prompt=append_producer_0.md   # a file in the repo's system-prompts/; "" for none
+  local -a env_extra=()   # extra environment for this profile, e.g. (NAME=value)
+  # ---------------------------------------------------------------------------
+  _pi_launch "$profile" "$prompt" "${env_extra[@]}" -- "$@"
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  pi-producer "$@"
+fi
