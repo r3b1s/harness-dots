@@ -18,6 +18,7 @@
 #   PI_SESSION_FILE              pi + omp  set for a harness's own child shells
 #   PI_PACKAGE_DIR               pi + omp  install dir of the harness package
 #   PI_CODING_AGENT              pi        "running inside pi" marker
+#   OMP_AUTH_BROKER_URL/_TOKEN   omp       remote credential store (unused here; scrubbed so a stray value can't redirect logins)
 _DOTS_HARNESS_VARS=(
   PI_CODING_AGENT_DIR
   PI_CONFIG_DIR
@@ -28,6 +29,8 @@ _DOTS_HARNESS_VARS=(
   PI_SESSION_FILE
   PI_PACKAGE_DIR
   PI_CODING_AGENT
+  OMP_AUTH_BROKER_URL
+  OMP_AUTH_BROKER_TOKEN
 )
 
 # _dots_scrub_args: print `-u NAME` pairs for env(1), one word per line,

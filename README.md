@@ -24,6 +24,11 @@ Harness subcommands work through any of them: `pi-ctf install npm:pkg`, `vpi lis
 
 Everything specific to a profile (profile, prompt file, extra environment variables in `env_extra`) sits in the marked `PROFILE` block of its file. The real `pi` / `omp` binary must be on PATH; with mise, that means `mise activate` or its shims.
 
+## Shared logins
+
+- **pi:** run `pi/link.sh` once. It symlinks `pi/auth.json` (and `pi/models.json`, if you create one) into every pi profile, so `/login` in any of them logs in all of them.
+- **omp:** each profile keeps its own logins in its `agent.db`; log in with `/login` or `vomp login <provider>`.
+
 ## Runtime state
 
 Both harnesses keep sessions, credentials and caches inside their config home, so inside this repo. `pi/.gitignore` and `omp/.gitignore` keep that out of git (omp's is an allowlist, since omp writes far more), and `pi/link.sh` symlinks the shared `pi/settings.json` into each pi profile.

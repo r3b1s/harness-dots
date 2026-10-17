@@ -64,7 +64,7 @@ def main() -> int:
     ap.add_argument("--mcp", choices=["copy", "none"], default="none", help="copy agent/mcp.json as a starting point")
     ap.add_argument("--env", action="append", default=[], metavar="NAME=value", help="extra environment for this profile (repeatable)")
     ap.add_argument("--rev", default="0", help="system prompt revision suffix (default 0)")
-    ap.add_argument("--link", action="store_true", help="symlink the shared settings.json into the profile")
+    ap.add_argument("--link", action="store_true", help="symlink the shared settings.json, auth.json and models.json into the profile")
     ap.add_argument("--repo", "--pi-dir", dest="pi_dir", type=Path, help="harness-dots repo root (default: found from this script or the cwd)")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
@@ -125,21 +125,17 @@ def main() -> int:
             entry.chmod(0o755)
         step(f"write {entry}", write_entry)
 
-    # 3. link.sh
+    # 3. link.sh: add the profile to its profiles=( ... ) list
     link = pi_dir / "link.sh"
     text = link.read_text()
-    if f'/agent_{under}"' in text:
+    m = re.search(r"^profiles=\(\n(.*?)^\)", text, re.M | re.S)
+    if not m:
+        sys.exit("link.sh has no 'profiles=(' list to extend")
+    if re.search(rf"^\s+agent_{under}$", m.group(1), re.M):
         print("= link.sh already lists the profile")
     else:
-        n = max(int(m) for m in re.findall(r"^pi(\d+)=", text, re.M)) + 1
-        var_line = f'pi{n}="${{here}}/agent_{under}"'
-        ln_line = f"link ${{settings0}} ${{pi{n}}}/settings.json # settings0 -> {a.name} pi"
-        lines = text.split("\n")
-        last_var = max(i for i, l in enumerate(lines) if re.match(r"pi\d+=", l))
-        last_ln = max(i for i, l in enumerate(lines) if l.startswith("link ${settings0}"))
-        lines.insert(last_ln + 1, ln_line)       # later index first, so the earlier one stays valid
-        lines.insert(last_var + 1, var_line)
-        step(f"link.sh: add pi{n} variable and ln -s line", lambda: link.write_text("\n".join(lines)))
+        new_text = text[:m.end(1)] + f"  agent_{under}\n" + text[m.end(1):]
+        step(f"link.sh: add agent_{under} to profiles", lambda: link.write_text(new_text))
 
     # 4. .gitignore
     gi = pi_dir / ".gitignore"
@@ -155,14 +151,16 @@ def main() -> int:
         glines.insert(idx[-1] + 1, entry_ignore)
         step(f".gitignore: add {entry_ignore}", lambda: gi.write_text("\n".join(glines)))
 
-    # 5. settings symlink
-    settings_link = profile / "settings.json"
+    # 5. shared-file symlinks (what link.sh would make for this profile)
     if a.link:
-        if settings_link.is_symlink() or settings_link.exists():
-            print("= settings.json already present in profile")
-        else:
-            step(f"symlink {settings_link} -> {pi_dir / 'settings.json'}",
-                 lambda: settings_link.symlink_to(pi_dir / "settings.json"))
+        for name in ("settings.json", "auth.json", "models.json"):
+            dest = profile / name
+            if not (pi_dir / name).exists():
+                print(f"= no shared pi/{name} yet (run link.sh later)")
+            elif dest.is_symlink() or dest.exists():
+                print(f"= {name} already present in profile")
+            else:
+                step(f"symlink {dest} -> ../{name}", lambda dest=dest, name=name: dest.symlink_to(f"../{name}"))
 
     if not todo:
         print("nothing to do")

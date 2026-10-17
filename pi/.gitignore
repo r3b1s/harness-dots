@@ -28,3 +28,6 @@ agent_ctf/settings.json
 agent_producer/settings.json
 
 tool-repair
+
+# link.sh --force backups
+*.bak

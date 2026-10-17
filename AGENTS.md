@@ -28,7 +28,9 @@ harness-dots/
 ├── pi/                  pi's config home
 │   ├── .gitignore       pi runtime state (blocklist)
 │   ├── settings.json    shared pi settings, symlinked into each profile
-│   ├── link.sh          creates those settings symlinks
+│   ├── auth.json        shared pi credentials (gitignored), symlinked into each profile
+│   ├── models.json      shared custom providers (gitignored, optional), likewise
+│   ├── link.sh          creates those symlinks
 │   ├── agent/           profile dirs: each one *is* a PI_CODING_AGENT_DIR
 │   ├── agent_<name>/
 │   └── bash/            _launch.bash, rc.bash, entry points (vpi, pi-ctf, pi-producer)
@@ -132,6 +134,37 @@ which is inside this repo, so each harness dir has its own `.gitignore`:
   in the ignored `omp/agent/.env`. Review `git diff --cached` on these files before committing.
 - The root `.gitignore` is a safety net for both: `auth.json`, `*.token`, `.env*`, `*.db*`.
 
+## Shared credentials
+
+This is the current setup; revisit it if either harness gains a native way to share credentials.
+
+### pi: one `auth.json`, symlinked
+
+pi keeps credentials in `<agent dir>/auth.json`, so `pi/link.sh` symlinks the shared
+`pi/auth.json` into every profile (and `pi/models.json`, custom providers, once it exists), next to
+the `settings.json` link. A `/login` in any pi profile logs in all of them.
+
+- The links are relative (`agent_ctf/auth.json -> ../auth.json`), so they survive moving the repo.
+- pi rewrites `auth.json` in place (`writeFileSync`), so writes keep the link intact.
+- `link.sh` creates `pi/auth.json` with mode 0600 if missing, replaces empty (`{}`) profile copies,
+  and leaves any other existing file alone unless `--force` (which moves it to `<file>.bak`).
+- New profiles: `scaffold.py` adds them to the `profiles=( ... )` list in `link.sh`.
+- Known limit: pi's write lock is taken on each profile's own link path, so two profiles running at
+  once lock separately. If the same OAuth token expires in both at the same moment, both may
+  refresh it, and a provider that rotates refresh tokens can then force a fresh `/login`. Rare.
+
+### omp: per profile, no sharing
+
+omp keeps credentials in each profile's `agent.db` (`omp/agent/agent.db`,
+`omp/profiles/<name>/agent/agent.db`), so each omp profile needs its own `/login` (or
+`vomp login <provider>`). There is only one omp profile today, so nothing needs sharing yet.
+
+- Don't symlink `agent.db` between profiles: it also holds usage stats, session titles and recaps,
+  and SQLite's `-wal`/`-shm` side files make it fragile behind a link.
+- omp's auth broker (`omp auth-broker`) was tried and removed; don't reintroduce it without asking.
+  `OMP_AUTH_BROKER_URL` and `OMP_AUTH_BROKER_TOKEN` stay in the scrub list so a stray value can't
+  quietly route a launch's logins to a broker.
+
 ## Profiles
 
 | | pi | omp |
@@ -139,6 +172,7 @@ which is inside this repo, so each harness dir has its own `.gitignore`:
 | Config home | `pi/` | `omp/` |
 | Profile dir | `pi/agent_<name>/` (`pi/agent/` for vanilla) | `omp/profiles/<name>/agent/` (`omp/agent/` for default) |
 | Settings file | `settings.json` (shared `pi/settings.json`, symlinked by `pi/link.sh`) | `config.yml` |
+| Credentials | shared `pi/auth.json`, symlinked by `pi/link.sh` | per profile, in that profile's `agent.db` |
 | Selected by | `PI_CODING_AGENT_DIR` | `PI_CONFIG_DIR` + `OMP_PROFILE` |
 | Entry point | `pi/bash/pi-<name>` | `omp/bash/omp-<name>` |
 | Prompt flag | `--append-system-prompt`, skipped for pi subcommands | `--append-system-prompt`, always (omp drops it for subcommands) |

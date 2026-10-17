@@ -30,6 +30,7 @@ themselves, so nothing relies on an environment variable.
 | Shared launcher | `pi/bash/_launch.bash` (sourced by every entry point; never edit per profile), which sources the repo-wide `bash/_common.bash` |
 | Installer | `install.sh` (repo root) symlinks every entry point in `*/bash/` onto PATH (`~/.local/bin`) |
 | Shared settings | `pi/settings.json`, symlinked into each profile by `pi/link.sh` and gitignored per profile in `pi/.gitignore` |
+| Shared logins | `pi/auth.json` (and optional `pi/models.json`), symlinked into each profile by `pi/link.sh`, gitignored |
 
 The vanilla profile is `pi/agent/` with entry point `vpi`. It is named so that it never shadows the
 real `pi` binary; no entry point may be called `pi`.
@@ -41,7 +42,7 @@ Inside a profile only what is *authored* is tracked:
 - `prompts/*.md` : slash-command prompt templates (frontmatter `description`, `argument-hint`).
 - `mcp.json` : MCP servers. `pi/agent/mcp.json` is the reference: `donsetch` enabled, `agent-browser`
   present but disabled.
-- `settings.json` : a symlink to the shared file, gitignored.
+- `settings.json`, `auth.json`, `models.json` : symlinks to the shared files in `pi/`, gitignored.
 - Runtime state (`auth.json`, `sessions`, `models.json`, `npm`, ...) is gitignored already. Never
   create or commit it. Also never create a `bin/` under `pi/`: `pi/.gitignore` ignores that
   name (Pi keeps its own `bin` under a profile), which is why the entry points live in `pi/bash/`.
@@ -104,9 +105,9 @@ it shares `PI_CODING_AGENT_DIR` and would pollute Pi's config and sessions. omp 
    ```
 
    It creates the profile dir, copies each `--skill`, optionally copies `pi/agent/mcp.json`, renders
-   `pi/bash/pi-<name>` (mode 755), appends the `pi<N>` variable and `link` line to `pi/link.sh`, and adds
+   `pi/bash/pi-<name>` (mode 755), adds the profile to the `profiles=( ... )` list in `pi/link.sh`, and adds
    `agent_<name>/settings.json` to `pi/.gitignore`. It skips any step already done, so rerunning is
-   safe. `--link` also symlinks the shared `settings.json` into the new profile; omit it if the
+   safe. `--link` also symlinks the shared `settings.json`, `auth.json` and `models.json` (those that exist) into the new profile; omit it if the
    other profiles aren't linked on this machine (check). It does not touch `~/.local/bin`.
 4. **Verify** and show the evidence:
    - `bash -n pi/bash/pi-<name>`;
