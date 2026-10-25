@@ -1,0 +1,35 @@
+{
+  "theme": "system",
+  "enableInstallTelemetry": false,
+  "markdown": {
+    "mermaid": "streaming"
+  },
+  "packages": [
+    "npm:pi-commandcode-provider",
+    "npm:@r3b1s/pi-vim-stash"
+  ],
+  "enabledModels": [
+    "commandcode/deepseek/deepseek-v4.1-flash",
+    "commandcode/deepseek/deepseek-v4.1-flash-fast",
+    "commandcode/meta/muse-spark-1.3-contributor",
+    "commandcode/gpt-6-luna",
+    "commandcode/deepseek/deepseek-v4-pro",
+    "commandcode/z-ai/glm-5.3-flash",
+    "commandcode/z-ai/glm-5.3-flashx",
+    "commandcode/xiaomi/mimo-v2.6-flash",
+    "commandcode/xiaomi/mimo-v2.6-pro-ultraspeed",
+    "commandcode/xiaomi/mimo-v2.6-pro",
+    "commandcode/Qwen/Qwen3.8-Omni-Flash",
+    "commandcode/stepfun/Step-5-Preview",
+    "commandcode/tencent/hy4-preview",
+    "commandcode/stealth/space-bunny-alpha",
+    "commandcode/poolside/laguna-s-2.1-free",
+    "commandcode/inclusionai/ling-3.0-flash-sante:free",
+    "commandcode/inclusionai/ling-3.1-flash:free",
+    "commandcode/meta/muse-spark-1.3",
+    "commandcode/xai/grok-4.7"
+  ],
+  "lastChangelogVersion": "1.4.0",
+  "defaultProvider": "opencode-go",
+  "defaultModel": "kimi-k3"
+}

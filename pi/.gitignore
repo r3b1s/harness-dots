@@ -22,12 +22,9 @@ diagnose-crash
 # bin folder? (pi keeps its own bin/ inside a profile)
 bin
 
-# ignore profile-specific settings.json in certain cases
-agent/settings.json
-agent_ctf/settings.json
-agent_producer/settings.json
-
 tool-repair
 
-# link.sh --force backups
+# copy-auth.sh backups of replaced auth.json / models.json
 *.bak
+.auth.json.*
+.models.json.*
