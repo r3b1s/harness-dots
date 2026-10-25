@@ -2,7 +2,8 @@
 # Shared launcher for the pi entry points in this directory (vpi, pi-ctf, ...).
 # They source it; it is not meant to be run, and `install.sh` does not link it.
 # The caller sets _PI_BASH_DIR to this directory before sourcing. The real `pi`
-# is the first one on PATH; no wrapper here is named `pi`, so there is no recursion.
+# is the first one on PATH, resolved past a mise shim (_dots_real_bin); no wrapper
+# here is named `pi`, so there is no recursion.
 
 # shellcheck source=../../bash/_common.bash
 source "$_PI_BASH_DIR/../../bash/_common.bash"
@@ -21,7 +22,7 @@ _pi_launch() {
   root="$(_dots_root "$_PI_BASH_DIR")"
   dir="$root/pi/$profile"
   [[ -d $dir ]] || { echo "dots: pi profile directory not found: $dir" >&2; return 1; }
-  real="$(type -P pi)" || { echo "dots: no pi binary found on PATH" >&2; return 127; }
+  real="$(_dots_real_bin pi)" || { echo "dots: no pi binary found on PATH" >&2; return 127; }
   mapfile -t scrub < <(_dots_scrub_args)
 
   case "${1-}" in

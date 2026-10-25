@@ -40,6 +40,24 @@ _dots_scrub_args() {
   for v in "${_DOTS_HARNESS_VARS[@]}"; do printf '%s\n' -u "$v"; done
 }
 
+# _dots_real_bin NAME: the path of the real NAME binary on PATH, or fail.
+# A mise shim (a link to the mise binary, first on PATH when shims are used
+# instead of `mise activate`, as in a systemd unit) re-applies mise's [env] when
+# it runs, after the scrub, so resolve past it with `mise which`. If mise cannot
+# resolve it, warn and fall back to the shim.
+_dots_real_bin() {
+  local name=$1 bin real
+  bin="$(type -P "$name")" || return 1
+  if [[ "$(basename -- "$(readlink -f -- "$bin")")" == mise ]]; then
+    if real="$(mise which "$name" 2>/dev/null)" && [[ -x $real ]]; then
+      bin=$real
+    else
+      echo "dots: $bin is a mise shim and \`mise which $name\` failed; mise's [env] will apply" >&2
+    fi
+  fi
+  printf '%s\n' "$bin"
+}
+
 # _dots_root DIR: the repo root, given a harness's bash/ directory.
 _dots_root() {
   (cd -- "$1/../.." && pwd -P)
