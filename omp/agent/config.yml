@@ -1,4 +1,12 @@
 setupVersion: 2
 modelRoles:
+  judge: commandcode/typesafe/jev
+  tiny: commandcode/deepseek/deepseek-v4.1-flash
   default: commandcode/z-ai/glm-5.3-flash
+  advisor: commandcode/meta/muse-spark-1.3-contributor
 defaultThinkingLevel: auto
+browser:
+  cdpUrl: http://127.0.0.1:9222
+theme:
+  dark: dark
+  light: light

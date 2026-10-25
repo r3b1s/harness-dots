@@ -1,0 +1,19 @@
+{
+  "$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
+  "mcpServers": {
+    "computer-use-linux": {
+      "type": "stdio",
+      "command": "computer-use-linux",
+      "args": [
+        "mcp"
+      ]
+    },
+    "agent-browser": {
+      "type": "stdio",
+      "command": "agent-browser",
+      "args": [
+        "mcp"
+      ]
+    }
+  }
+}
