@@ -1,0 +1,7 @@
+# paseo/ holds only authored config. Paseo's runtime state, logs, keys and the
+# live config.json (with UI changes and the daemon password) stay in
+# $PASEO_HOME (~/.paseo); install.sh copies config.json there, never links it.
+
+# install.sh backups, should one ever run with --home pointed here
+*.bak
+.config.json.*

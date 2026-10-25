@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "daemon": {
+    "listen": "10.20.30.40:6767",
+    "mcp": {
+      "injectIntoAgents": true
+    },
+    "cors": {
+      "allowedOrigins": [
+        "https://app.paseo.sh"
+      ]
+    },
+    "relay": {
+      "enabled": false
+    }
+  },
+  "app": {
+    "baseUrl": "https://app.paseo.sh"
+  },
+  "agents": {
+    "providers": {
+      "codex": {
+        "enabled": false
+      },
+      "muse": {
+        "enabled": false
+      },
+      "pi-ctf": {
+        "extends": "pi",
+        "label": "Pi CTF agent",
+        "command": [
+          "/home/t/Dotfiles/harness-dots/pi/bash/pi-ctf"
+        ],
+        "env": {
+          "PI_CODING_AGENT_DIR": "/home/t/Dotfiles/harness-dots/pi/agent_ctf"
+        }
+      },
+      "pi-producer": {
+        "extends": "pi",
+        "label": "Pi video producer agent",
+        "command": [
+          "/home/t/Dotfiles/harness-dots/pi/bash/pi-producer"
+        ],
+        "env": {
+          "PI_CODING_AGENT_DIR": "/home/t/Dotfiles/harness-dots/pi/agent_producer"
+        }
+      },
+      "pi": {
+        "command": [
+          "/home/t/Dotfiles/harness-dots/pi/bash/vpi"
+        ],
+        "env": {
+          "PI_CODING_AGENT_DIR": "/home/t/Dotfiles/harness-dots/pi/agent"
+        }
+      }
+    }
+  },
+  "features": {
+    "dictation": {
+      "enabled": true
+    },
+    "voiceMode": {
+      "enabled": true
+    }
+  }
+}
