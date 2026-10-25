@@ -24,11 +24,15 @@ Harness subcommands work through any of them: `pi-ctf install npm:pkg`, `vpi lis
 
 Everything specific to a profile (profile, prompt file, extra environment variables in `env_extra`) sits in the marked `PROFILE` block of its file. The real `pi` / `omp` binary must be on PATH; with mise, that means `mise activate` or its shims.
 
+## Paseo
+
+`paseo/config.json` is the tracked source for Paseo's `~/.paseo/config.json`. `paseo/install.sh` merges it into the live file (a copy, so the daemon password and UI edits never reach the repo; `--dry-run` shows the diff), then `paseo reload` applies it. `paseo/gen-pi-providers.py` adds one Paseo provider per pi profile (`pi`, `pi-ctf`, `pi-producer`), each launched through its entry point; pick them in Paseo's agent profiles. Details in [AGENTS.md](AGENTS.md#paseo).
+
 ## Shared logins
 
-- **pi:** run `pi/link.sh` once. It symlinks `pi/auth.json` (and `pi/models.json`, if you create one) into every pi profile, so `/login` in any of them logs in all of them.
+- **pi:** `/login` in one profile (e.g. `vpi`), then run `pi/copy-auth.sh`. It copies that profile's `auth.json` and `models.json` into every other pi profile (`--from`/`--to` to choose; a replaced file is kept as `.bak`). The files stay untracked.
 - **omp:** each profile keeps its own logins in its `agent.db`; log in with `/login` or `vomp login <provider>`.
 
 ## Runtime state
 
-Both harnesses keep sessions, credentials and caches inside their config home, so inside this repo. `pi/.gitignore` and `omp/.gitignore` keep that out of git (omp's is an allowlist, since omp writes far more), and `pi/link.sh` symlinks the shared `pi/settings.json` into each pi profile.
+Both harnesses keep sessions, credentials and caches inside their config home, so inside this repo. `pi/.gitignore` and `omp/.gitignore` keep that out of git (omp's is an allowlist, since omp writes far more), and each pi profile keeps its own tracked `settings.json` (with its own extensions: `pi-ctf install npm:pkg`).

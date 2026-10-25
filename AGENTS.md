@@ -7,6 +7,8 @@ Today it holds two harnesses:
 - **omp** (oh-my-pi, [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi), a pi derivative),
   whose config home is `omp/`
 
+and the config of one harness *host*, [Paseo](https://paseo.sh), in `paseo/` (see [Paseo](#paseo)).
+
 Each harness's directory **is** that harness's global configuration: the launchers point the
 harness straight at it, so neither `~/.pi` nor `~/.omp` is used. The two harnesses share ancestry and
 many environment variables. The rule this layout exists to enforce:
@@ -27,18 +29,19 @@ harness-dots/
 ├── skills/              harness-agnostic skills (and skills for authoring this repo)
 ├── pi/                  pi's config home
 │   ├── .gitignore       pi runtime state (blocklist)
-│   ├── settings.json    shared pi settings, symlinked into each profile
-│   ├── auth.json        shared pi credentials (gitignored), symlinked into each profile
-│   ├── models.json      shared custom providers (gitignored, optional), likewise
-│   ├── link.sh          creates those symlinks
-│   ├── agent/           profile dirs: each one *is* a PI_CODING_AGENT_DIR
+│   ├── copy-auth.sh     copies auth.json / models.json from one profile into others
+│   ├── agent/           profile dirs: each one *is* a PI_CODING_AGENT_DIR, with its own settings.json
 │   ├── agent_<name>/
 │   └── bash/            _launch.bash, rc.bash, entry points (vpi, pi-ctf, pi-producer)
-└── omp/                 omp's config root (PI_CONFIG_DIR points here)
-    ├── .gitignore       allowlist: only authored config is trackable
-    ├── agent/           default profile
-    ├── profiles/<name>/agent/   named profiles (omp's native profile layout)
-    └── bash/            _launch.bash, rc.bash, entry points (vomp)
+├── omp/                 omp's config root (PI_CONFIG_DIR points here)
+│   ├── .gitignore       allowlist: only authored config is trackable
+│   ├── agent/           default profile
+│   ├── profiles/<name>/agent/   named profiles (omp's native profile layout)
+│   └── bash/            _launch.bash, rc.bash, entry points (vomp)
+└── paseo/               tracked Paseo config; NOT Paseo's home (that stays ~/.paseo)
+    ├── config.json      source for ~/.paseo/config.json
+    ├── install.sh       merges config.json into the live copy
+    └── gen-pi-providers.py  writes a Paseo provider per pi profile into config.json
 ```
 
 ### What goes where
@@ -95,6 +98,12 @@ So every launcher:
      state would stay in `~/.omp`.
 3. Adds the profile's `env_extra` (from its `PROFILE` block) last.
 
+A mise shim re-applies mise's `[env]` when it runs, after the scrub, and overrides values already
+set. Shims come first on PATH wherever `mise activate` isn't used (the Paseo systemd unit, cron),
+so the pi launcher resolves the binary with `_dots_real_bin` (`bash/_common.bash`), which follows a
+shim to the real binary via `mise which`. A `PI_CODING_AGENT_DIR` in mise's `[env]` used to send
+every shim-launched profile to `~/.pi/agent` this way.
+
 Never export any harness variable globally (in `~/.bashrc`, mise `[env]` or similar). If a
 variable is needed, put it in the profile's `env_extra`. Do not add a variable to the scrub list
 unless it selects a harness's config, profile or session; user preferences such as
@@ -138,20 +147,18 @@ which is inside this repo, so each harness dir has its own `.gitignore`:
 
 This is the current setup; revisit it if either harness gains a native way to share credentials.
 
-### pi: one `auth.json`, symlinked
+### pi: per profile, copied with `pi/copy-auth.sh`
 
-pi keeps credentials in `<agent dir>/auth.json`, so `pi/link.sh` symlinks the shared
-`pi/auth.json` into every profile (and `pi/models.json`, custom providers, once it exists), next to
-the `settings.json` link. A `/login` in any pi profile logs in all of them.
+pi keeps credentials in `<agent dir>/auth.json` and custom providers (which may carry `apiKey`s) in
+`<agent dir>/models.json`. Both stay per profile and gitignored. `pi/copy-auth.sh` copies them from
+one profile into others: `--from agent` by default, `--to` every other `pi/agent*` dir by default.
+Log in once (e.g. `vpi`, then `/login`), then run `pi/copy-auth.sh`.
 
-- The links are relative (`agent_ctf/auth.json -> ../auth.json`), so they survive moving the repo.
-- pi rewrites `auth.json` in place (`writeFileSync`), so writes keep the link intact.
-- `link.sh` creates `pi/auth.json` with mode 0600 if missing, replaces empty (`{}`) profile copies,
-  and leaves any other existing file alone unless `--force` (which moves it to `<file>.bak`).
-- New profiles: `scaffold.py` adds them to the `profiles=( ... )` list in `link.sh`.
-- Known limit: pi's write lock is taken on each profile's own link path, so two profiles running at
-  once lock separately. If the same OAuth token expires in both at the same moment, both may
-  refresh it, and a provider that rotates refresh tokens can then force a fresh `/login`. Rare.
+- Copies, never links: no shared credential file sits in the repo, and each profile can diverge.
+- A matching target is left alone; a differing one is moved to `<file>.bak` first (gitignored), so a
+  login made only in that profile can be recovered. Copies are written atomically with mode 0600.
+- Known limit: an OAuth provider that rotates refresh tokens invalidates the other profiles' copies
+  when one profile refreshes. Copy again from the profile that refreshed, or `/login` there.
 
 ### omp: per profile, no sharing
 
@@ -171,8 +178,8 @@ omp keeps credentials in each profile's `agent.db` (`omp/agent/agent.db`,
 |---|---|---|
 | Config home | `pi/` | `omp/` |
 | Profile dir | `pi/agent_<name>/` (`pi/agent/` for vanilla) | `omp/profiles/<name>/agent/` (`omp/agent/` for default) |
-| Settings file | `settings.json` (shared `pi/settings.json`, symlinked by `pi/link.sh`) | `config.yml` |
-| Credentials | shared `pi/auth.json`, symlinked by `pi/link.sh` | per profile, in that profile's `agent.db` |
+| Settings file | the profile's own `settings.json`, tracked; holds its extensions (`packages`) | `config.yml` |
+| Credentials | per profile `auth.json` / `models.json`, gitignored, copied by `pi/copy-auth.sh` | per profile, in that profile's `agent.db` |
 | Selected by | `PI_CODING_AGENT_DIR` | `PI_CONFIG_DIR` + `OMP_PROFILE` |
 | Entry point | `pi/bash/pi-<name>` | `omp/bash/omp-<name>` |
 | Prompt flag | `--append-system-prompt`, skipped for pi subcommands | `--append-system-prompt`, always (omp drops it for subcommands) |
@@ -181,9 +188,42 @@ Appended system prompts live in `system-prompts/append_<name>_<rev>.md` and are 
 point's `PROFILE` block. The launcher refuses to start if the file is missing, because both
 harnesses would otherwise append the path as literal text.
 
-The `skills/pi-profile` skill scaffolds pi profiles (`scripts/scaffold.py`). There is no omp
+Extensions are managed per pi profile: `pi-<name> install npm:<pkg>` writes that profile's own
+`settings.json`, which is tracked (pi also writes small runtime values there, such as
+`lastChangelogVersion`; commit those with the rest). Don't symlink `settings.json` between profiles.
+
+The `skills/pi-profile` skill scaffolds pi profiles (`scripts/scaffold.py`); the
+`skills/harness-dots-paseo` skill covers `paseo/` and exposing pi profiles in Paseo. There is no omp
 scaffold yet; copy `omp/bash/vomp`, set `profile=<name>` in its `PROFILE` block, and put tracked
 config in `omp/profiles/<name>/agent/`.
+
+## Paseo
+
+[Paseo](https://paseo.sh) runs pi (and other harnesses) from a daemon. Its home is `$PASEO_HOME`
+(`~/.paseo`; the systemd unit sets it explicitly), and `config.json` there is its only settings
+file: providers (`agents.providers`), agent profiles (`daemon.agentProfiles`), daemon settings, and
+the daemon password (`daemon.auth`). Everything else in the home is runtime state and keys, so
+`PASEO_HOME` stays at `~/.paseo` and only `config.json` is tracked, in `paseo/config.json`.
+
+- **A copy, never a link.** `paseo/install.sh` writes the live `~/.paseo/config.json`; nothing
+  flows back. The daemon writes UI changes and the password into the live file, so a symlink would
+  put them in this repo. To keep a UI change, copy it into `paseo/config.json` by hand.
+- **Merge by default.** `install.sh` deep-merges the tracked file over the live one: objects key by
+  key, arrays of `id`-bearing objects (agent and terminal profiles) by `id`, everything else
+  replaced. Live-only keys survive, which is how the password and UI-made profiles are kept; it also
+  means a provider deleted from the tracked file stays live until `--replace` (which keeps only the
+  live `daemon.auth`) or removal in the app. It refuses to install a tracked `daemon.auth`. The old
+  live file is kept as `config.json.bak`; apply with `paseo reload` (or `install.sh --reload`).
+- **One provider per pi profile.** Paseo's agent profiles hold only provider, model, mode, thinking
+  and notes, no environment, so each pi profile becomes a Paseo *provider* and agent profiles pick
+  one. `paseo/gen-pi-providers.py` writes them from the entry points: `vpi` overrides the built-in
+  `pi` provider, `pi-<name>` becomes a provider `pi-<name>` with `"extends": "pi"`. Each launches
+  the entry point (`command`), so the prompt, `env_extra` and scrubbing apply, and sets
+  `PI_CODING_AGENT_DIR` (`env`), which Paseo itself reads for the profile's `mcp.json` and session
+  import. Rerun it after adding, removing or moving a profile (`--check` reports drift); it leaves
+  other providers and hand-added keys alone.
+- Provider `env` values are stored literally (no `${VAR}` expansion), so a provider that needs an
+  API key does not belong in the tracked file.
 
 ## Rules for agents working in this repo
 
@@ -191,8 +231,9 @@ config in `omp/profiles/<name>/agent/`.
   `models.yml`, `secrets.yml`, `.env`. Check `git status` before staging.
 - Never point one harness at another harness's directory, and never wire a pi profile into an omp
   launcher or the reverse. Don't point either harness at `~/.pi` or `~/.omp`.
-- `install.sh` and `pi/link.sh` write outside the files they live next to (`~/.local/bin`, profile
-  dirs). Run `install.sh --dry-run` first, and run either for real only when the user asks.
+- `install.sh`, `pi/copy-auth.sh` and `paseo/install.sh` write outside the files they live next to
+  (`~/.local/bin`, profile credentials, `~/.paseo`). Run them with `--dry-run` first, and for real only
+  when the user asks.
 - The global mise config (`~/.config/mise/config.toml`, from the mise-dots repo) used to hold
   harness tasks; they are being moved here. Don't add new harness tasks there.
 - Verify bash changes with `bash -n` on every touched file, plus a smoke test through the real
