@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Scaffold a Pi profile in harness-dots/pi/: profile dir, bash entry point, link.sh and .gitignore entries.
+"""Scaffold a Pi profile in harness-dots/pi/: profile dir, own settings.json, bash entry point.
 
     scaffold.py NAME --label "video producer" [--skill DIR ...] [--mcp copy|none]
-                [--env NAME=value ...] [--link] [--dry-run]
+                [--env NAME=value ...] [--copy-auth] [--dry-run]
 
 NAME gives the profile dir pi/agent_<name> and the command pi-<name>. Stdlib only.
 Idempotent: every step that is already done is reported and skipped.
 The system prompt (system-prompts/append_<name>_<rev>.md) must exist first; this
-script never writes prose for you. It does not touch ~/.local/bin or the mise
-config: run ./install.sh to link the command onto PATH.
+script never writes prose for you. The profile gets its own tracked settings.json
+("{}"), since extensions (`packages`) are managed per profile. --copy-auth copies
+the vanilla profile's logins in (pi/copy-auth.sh). It does not touch ~/.local/bin,
+the mise config or Paseo: run ./install.sh to link the command onto PATH and
+paseo/gen-pi-providers.py to add the Paseo provider.
 """
 
 import argparse
@@ -16,6 +19,7 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -64,7 +68,7 @@ def main() -> int:
     ap.add_argument("--mcp", choices=["copy", "none"], default="none", help="copy agent/mcp.json as a starting point")
     ap.add_argument("--env", action="append", default=[], metavar="NAME=value", help="extra environment for this profile (repeatable)")
     ap.add_argument("--rev", default="0", help="system prompt revision suffix (default 0)")
-    ap.add_argument("--link", action="store_true", help="symlink the shared settings.json, auth.json and models.json into the profile")
+    ap.add_argument("--copy-auth", action="store_true", help="copy auth.json and models.json from pi/agent (pi/copy-auth.sh)")
     ap.add_argument("--repo", "--pi-dir", dest="pi_dir", type=Path, help="harness-dots repo root (default: found from this script or the cwd)")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
@@ -107,6 +111,11 @@ def main() -> int:
         else:
             step(f"copy skill {s} -> {dest}",
                  lambda s=s, dest=dest: (dest.parent.mkdir(parents=True, exist_ok=True), shutil.copytree(s, dest)))
+    settings = profile / "settings.json"
+    if settings.exists() or settings.is_symlink():
+        print(f"= settings.json exists: {settings}")
+    else:
+        step(f"write {settings} (own settings: per-profile packages)", lambda: settings.write_text("{}\n"))
     mcp_src, mcp_dst = pi_dir / "agent" / "mcp.json", profile / "mcp.json"
     if a.mcp == "copy":
         if mcp_dst.exists():
@@ -125,52 +134,22 @@ def main() -> int:
             entry.chmod(0o755)
         step(f"write {entry}", write_entry)
 
-    # 3. link.sh: add the profile to its profiles=( ... ) list
-    link = pi_dir / "link.sh"
-    text = link.read_text()
-    m = re.search(r"^profiles=\(\n(.*?)^\)", text, re.M | re.S)
-    if not m:
-        sys.exit("link.sh has no 'profiles=(' list to extend")
-    if re.search(rf"^\s+agent_{under}$", m.group(1), re.M):
-        print("= link.sh already lists the profile")
-    else:
-        new_text = text[:m.end(1)] + f"  agent_{under}\n" + text[m.end(1):]
-        step(f"link.sh: add agent_{under} to profiles", lambda: link.write_text(new_text))
-
-    # 4. .gitignore
-    gi = pi_dir / ".gitignore"
-    entry_ignore = f"agent_{under}/settings.json"
-    gtext = gi.read_text()
-    if entry_ignore in gtext.splitlines():
-        print("= .gitignore already ignores the profile settings.json")
-    else:
-        glines = gtext.split("\n")
-        idx = [i for i, l in enumerate(glines) if re.fullmatch(r"agent\w*/settings\.json", l)]
-        if not idx:
-            sys.exit(".gitignore has no 'agent*/settings.json' block to extend")
-        glines.insert(idx[-1] + 1, entry_ignore)
-        step(f".gitignore: add {entry_ignore}", lambda: gi.write_text("\n".join(glines)))
-
-    # 5. shared-file symlinks (what link.sh would make for this profile)
-    if a.link:
-        for name in ("settings.json", "auth.json", "models.json"):
-            dest = profile / name
-            if not (pi_dir / name).exists():
-                print(f"= no shared pi/{name} yet (run link.sh later)")
-            elif dest.is_symlink() or dest.exists():
-                print(f"= {name} already present in profile")
-            else:
-                step(f"symlink {dest} -> ../{name}", lambda dest=dest, name=name: dest.symlink_to(f"../{name}"))
+    # 3. logins: copy auth.json / models.json from the vanilla profile
+    if a.copy_auth:
+        copy = pi_dir / "copy-auth.sh"
+        step(f"{copy} --to agent_{under}",
+             lambda: subprocess.run([str(copy), "--to", f"agent_{under}"], check=True))
 
     if not todo:
         print("nothing to do")
         return 0
     for msg, fn in todo:
-        print(("would: " if a.dry_run else "do: ") + msg)
+        print(("would: " if a.dry_run else "do: ") + msg, flush=True)
         if not a.dry_run:
             fn()
     if not a.dry_run:
-        print(f"\nnext:\n  {root}/install.sh --only {cmd} --dry-run   # then without --dry-run to link it onto PATH")
+        print(f"\nnext:\n  {root}/install.sh --only {cmd} --dry-run   # then without --dry-run to link it onto PATH"
+              f"\n  {root}/paseo/gen-pi-providers.py --dry-run   # Paseo provider {cmd}; then paseo/install.sh")
     return 0
 
 

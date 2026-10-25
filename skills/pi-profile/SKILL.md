@@ -2,20 +2,24 @@
 name: pi-profile
 description: >
   Create or audit a Pi agent profile in the user's harness-dots repo (~/Dotfiles/harness-dots): the pi/agent_<name>
-  directory, its appended system prompt, and the pi-<name> bash entry point that launches it. Use when
-  the user wants a new Pi profile, "agent_<name>", a purpose-specific agent, a `pi-<name>` command, or
-  a system prompt, skills or MCP servers bundled into a launchable profile.
+  directory, its appended system prompt, its own extensions, the pi-<name> bash entry point that launches it,
+  and the matching Paseo provider. Use when the user wants a new Pi profile, "agent_<name>", a purpose-specific
+  agent, a `pi-<name>` command, per-profile extensions, or a system prompt, skills or MCP servers bundled into a
+  launchable profile.
 ---
 
 # Authoring a Pi profile (harness-dots)
 
-The user keeps each Pi harness profile as a directory in `harness-dots`, selected by `PI_CODING_AGENT_DIR`,
+The user keeps each Pi profile as a directory in `harness-dots`, selected by `PI_CODING_AGENT_DIR`,
 and launches it through a small bash entry point in `harness-dots/pi/bash/`. `harness-dots/pi/` is
-Pi's config home. The repo also holds omp (oh-my-pi) config under `omp/`; read the repo's
-`AGENTS.md` for the cross-harness conventions. A new profile is four
-coordinated pieces: the profile dir, a system prompt, the entry point, and `link.sh` / `.gitignore`
-bookkeeping. `scripts/scaffold.py` does the mechanical parts. You author the system prompt and decide
-what goes inside the profile.
+Pi's config home. The same entry points are what Paseo launches: each profile becomes a Paseo
+provider in `paseo/config.json` (see the `harness-dots-paseo` skill). The repo also holds omp
+(oh-my-pi) config under `omp/`; read the repo's `AGENTS.md` for the cross-harness conventions.
+
+A new profile is four coordinated pieces: the profile dir (with its own `settings.json`), a system
+prompt, the entry point, and the Paseo provider; logins are copied in separately. `scripts/scaffold.py` does the
+mechanical parts and `paseo/gen-pi-providers.py` the Paseo part. You author the system prompt and
+decide what goes inside the profile.
 
 ## The conventions
 
@@ -29,65 +33,103 @@ themselves, so nothing relies on an environment variable.
 | Entry point | `pi/bash/pi-<name>`, executable, built from the template below |
 | Shared launcher | `pi/bash/_launch.bash` (sourced by every entry point; never edit per profile), which sources the repo-wide `bash/_common.bash` |
 | Installer | `install.sh` (repo root) symlinks every entry point in `*/bash/` onto PATH (`~/.local/bin`) |
-| Shared settings | `pi/settings.json`, symlinked into each profile by `pi/link.sh` and gitignored per profile in `pi/.gitignore` |
-| Shared logins | `pi/auth.json` (and optional `pi/models.json`), symlinked into each profile by `pi/link.sh`, gitignored |
+| Settings and extensions | `pi/agent_<name>/settings.json`, the profile's own file, tracked |
+| Logins | `pi/agent_<name>/auth.json` and `models.json`, gitignored, copied between profiles by `pi/copy-auth.sh` |
+| Paseo provider | `agents.providers["pi-<name>"]` in `paseo/config.json`, written by `paseo/gen-pi-providers.py` |
 
-The vanilla profile is `pi/agent/` with entry point `vpi`. It is named so that it never shadows the
-real `pi` binary; no entry point may be called `pi`.
+The vanilla profile is `pi/agent/` with entry point `vpi`; in Paseo it overrides the built-in `pi`
+provider. It is named so that it never shadows the real `pi` binary; no entry point may be called `pi`.
 
-Inside a profile only what is *authored* is tracked:
+### Extensions and settings are per profile
+
+Each profile has its own `settings.json`; it holds the profile's Pi package declarations
+(`packages`), so profiles differ in which extensions they load. Install into one profile through its
+entry point, which routes Pi's subcommands to that profile:
+
+```bash
+pi-<name> install npm:some-pi-package     # writes pi/agent_<name>/settings.json, installs under its npm/
+pi-<name> list
+pi-<name> remove npm:some-pi-package
+```
+
+Never `vpi install` something meant for another profile, and never install with a bare `pi`: that
+uses whatever `PI_CODING_AGENT_DIR` happens to be set, or `~/.pi/agent`.
+
+- Profile `settings.json` files are tracked, so the package list is reproducible. Pi also writes
+  small runtime values there (`lastChangelogVersion`, `defaultModel`); they're committed with the
+  rest. Never symlink `settings.json` between profiles.
+- `scaffold.py` creates `settings.json` as `{}` so the profile has its own from the start.
+- Local extensions can also live in `pi/agent_<name>/extensions/` (Pi discovers that dir); those are
+  tracked.
+
+### Tracked inside a profile
+
+Only what is *authored* is tracked:
 
 - `skills/<skill>/` : skills copied in whole (a directory containing `SKILL.md`). Pi discovers
   `$PI_CODING_AGENT_DIR/skills/` on its own. Copy rather than symlink so the dotfiles stand alone.
 - `prompts/*.md` : slash-command prompt templates (frontmatter `description`, `argument-hint`).
+- `extensions/` : local extension files.
 - `mcp.json` : MCP servers. `pi/agent/mcp.json` is the reference: `donsetch` enabled, `agent-browser`
   present but disabled.
-- `settings.json`, `auth.json`, `models.json` : symlinks to the shared files in `pi/`, gitignored.
-- Runtime state (`auth.json`, `sessions`, `models.json`, `npm`, ...) is gitignored already. Never
-  create or commit it. Also never create a `bin/` under `pi/`: `pi/.gitignore` ignores that
-  name (Pi keeps its own `bin` under a profile), which is why the entry points live in `pi/bash/`.
+- `settings.json` : the profile's settings and extensions (see above).
+- Runtime state (`auth.json`, `models*.json`, `sessions`, `npm`, `trust.json`, ...) is gitignored
+  already. Never commit it. Never create a `bin/` under `pi/`: `pi/.gitignore` ignores
+  that name (Pi keeps its own `bin` under a profile), which is why the entry points live in `pi/bash/`.
 
 ### The entry point
 
 Every entry point has the same shape, and the only part that varies is the `PROFILE` block:
 
 ```bash
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# Pi <label> agent            <- line 3: Paseo shows this as the provider label
+...
 pi-<name>() {
-  # --- PROFILE ---
+  # --- PROFILE ---------------------------------------------------------------
   local profile=agent_<name>
   local prompt=append_<name>_0.md   # a file in system-prompts/; "" for none
   local -a env_extra=()             # extra environment for this profile, e.g. (NAME=value)
-  # ---
+  # ---------------------------------------------------------------------------
   _pi_launch "$profile" "$prompt" "${env_extra[@]}" -- "$@"
 }
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then pi-<name> "$@"; fi
 ```
 
-The file works two ways: run it (symlinked onto PATH, usable from scripts and cron) or `source` it to
-define the function. `_pi_launch` scrubs every variable pi and omp share (`bash/_common.bash`), sets `PI_CODING_AGENT_DIR` for that one command only, adds
-`--append-system-prompt` unless the first argument is a Pi subcommand (`install`, `remove`,
-`uninstall`, `update`, `list`, `config`, `auth`, `mcp`), refuses to run if the prompt file is missing
-(Pi would otherwise append the path as literal text), and runs the first real `pi` found on PATH. So
-there are no `-install` / `-uninstall` helpers: `pi-<name> install npm:pkg` is the way.
+The file works two ways: run it (symlinked onto PATH, usable from scripts, cron and Paseo) or
+`source` it to define the function. `_pi_launch`:
 
-Use `scaffold.py` instead of writing the file by hand; it renders exactly this template.
+- scrubs every variable pi and omp share (`bash/_common.bash`) and sets `PI_CODING_AGENT_DIR` for
+  that one command only;
+- adds `--append-system-prompt` unless the first argument is a Pi subcommand (`install`, `remove`,
+  `uninstall`, `update`, `list`, `config`, `auth`, `mcp`). Paseo's launches start with `--mode rpc`,
+  so they get the prompt;
+- refuses to run if the prompt file is missing (Pi would otherwise append the path as literal text);
+- runs the real `pi` via `_dots_real_bin`, which follows a mise shim to the real binary. A shim
+  re-applies mise's `[env]` after the scrub, and shims come first on PATH under Paseo's systemd unit.
 
-### Legacy mise tasks
+`paseo/gen-pi-providers.py` reads these files, so keep the shape: executable, no leading `_`, no
+`.bash` extension, a `# --- PROFILE ---` block containing `local profile=...`, and the label comment
+on line 3. Use `scaffold.py` instead of writing the file by hand; it renders exactly this template.
 
-The global mise config (`~/.config/mise/config.toml`, a symlink to `~/Dotfiles/mise-dots/config.toml`)
-may still carry older `pi`, `pi-ctf*` and `pi-producer*` tasks from before the bash entry points
-(the `omp` task has already moved to `omp/bash/vomp`).
-They are superseded. **Do not add mise tasks for a new profile.** Do not remove the old ones unless
-the user asks; that repo often has their own uncommitted edits, so look at `git diff` first and
-report rather than bundle or revert them. Never wire `omp` (oh-my-pi) to a `pi/` profile:
-it shares `PI_CODING_AGENT_DIR` and would pollute Pi's config and sessions. omp profiles live in `omp/`.
+### Environment rules
+
+- Never export `PI_CODING_AGENT_DIR` or any other harness selector globally: not in `~/.bashrc`,
+  not in mise `[env]` (`~/.config/mise/config.toml` and its tracked copy in `mise-dots`), not in a
+  systemd unit. A global value in mise `[env]` used to override every shim-launched profile.
+- Per-profile variables go in the entry point's `env_extra`. Paseo needs nothing more: its provider
+  entry only adds `PI_CODING_AGENT_DIR` so Paseo's own reads (MCP config, session import) match.
+- Do not add mise tasks for a profile; the entry points replaced them. Never wire `omp` to a `pi/`
+  profile: it shares `PI_CODING_AGENT_DIR` and would pollute Pi's config and sessions.
 
 ## Workflow
 
-1. **Gather**: a short `name` (lowercase, hyphens ok), a `label` for the header ("video producer"),
-   what the agent is for, which skills it should bundle (and where to copy them from), whether it
-   should get an `mcp.json`, and any per-profile environment variables. If the purpose is clear
-   from the request, pick the defaults below and say so instead of asking.
+1. **Gather**: a short `name` (lowercase, hyphens ok; it becomes the command and Paseo provider id
+   `pi-<name>`), a `label` for the header ("video producer"), what the agent is for, which skills it
+   should bundle (and where from), which extensions it should install, whether it should get an
+   `mcp.json`, and any per-profile environment variables. If the purpose is clear from the request,
+   pick the defaults below and say so instead of asking.
 2. **Author the system prompt** to `system-prompts/append_<name>_0.md` *before* scaffolding (the
    script refuses to proceed without it). Read `append_ctf_0.md` and `append_producer_0.md` for
    tone. Write it as an **append** to Pi's default coding prompt, so it describes the role, not the
@@ -101,41 +143,57 @@ it shares `PI_CODING_AGENT_DIR` and would pollute Pi's config and sessions. omp 
    python3 ~/Dotfiles/harness-dots/skills/pi-profile/scripts/scaffold.py NAME \
      --label "video producer" \
      --skill /path/to/skill-dir [--skill ...] \
-     [--mcp copy] [--env NAME=value ...] [--link] [--dry-run]
+     [--mcp copy] [--env NAME=value ...] [--copy-auth] [--dry-run]
    ```
 
-   It creates the profile dir, copies each `--skill`, optionally copies `pi/agent/mcp.json`, renders
-   `pi/bash/pi-<name>` (mode 755), adds the profile to the `profiles=( ... )` list in `pi/link.sh`, and adds
-   `agent_<name>/settings.json` to `pi/.gitignore`. It skips any step already done, so rerunning is
-   safe. `--link` also symlinks the shared `settings.json`, `auth.json` and `models.json` (those that exist) into the new profile; omit it if the
-   other profiles aren't linked on this machine (check). It does not touch `~/.local/bin`.
-4. **Verify** and show the evidence:
+   It creates the profile dir with its own `settings.json` (`{}`), copies each `--skill`, optionally
+   copies `pi/agent/mcp.json`, and renders `pi/bash/pi-<name>` (mode 755). It skips any step
+   already done, so rerunning is safe. `--copy-auth` runs `pi/copy-auth.sh --to agent_<name>`,
+   copying the vanilla profile's `auth.json` / `models.json` in; use it when the user wants the new
+   profile logged in like the others. It does not touch `~/.local/bin` or Paseo.
+4. **Extensions**: `pi/bash/pi-<name> install npm:<pkg>` for each one (this writes into the user's
+   real profile and downloads packages; do it when the user asked for those extensions).
+5. **Paseo provider**: `paseo/gen-pi-providers.py --dry-run`, show the new `pi-<name>` entry, then
+   run it without `--dry-run`. That edits only the tracked `paseo/config.json`. Applying it to the
+   live Paseo config (`paseo/install.sh`) writes into `~/.paseo`: offer it, run it only when asked
+   (`harness-dots-paseo` skill).
+6. **Verify** and show the evidence:
    - `bash -n pi/bash/pi-<name>`;
    - `./install.sh --only pi-<name> --dry-run` shows the link it would make (run it for real only if
      the user says so; it writes into their home directory);
-   - a launch smoke test against the real binary needs no session:
-     `PATH=<dir containing the link>:$PATH pi-<name> --version` and `pi-<name> list`;
+   - a launch smoke test against the real binary needs no session: `pi/bash/pi-<name> --version`
+     and `pi/bash/pi-<name> list`;
+   - `paseo/gen-pi-providers.py --check` passes;
    - `git -C ~/Dotfiles/harness-dots status --short` shows only the expected changes.
-5. **Report**: files created, the command name, whether it is linked onto PATH yet, and the defaults
-   you chose. **Do not commit** unless the user asks.
+7. **Report**: files created, the command name, whether it is linked onto PATH, whether the Paseo
+   provider is generated and installed, and the defaults you chose. **Do not commit** unless the user
+   asks.
+
+Removing a profile: delete its entry point and directory (after asking; the directory holds
+sessions and logins), rerun `paseo/gen-pi-providers.py` (it
+drops the provider from `paseo/config.json`), and remove the provider from live Paseo in the app or
+with `paseo/install.sh --replace`, since the default merge keeps live-only providers.
 
 ## Defaults when unspecified
 
-- No `mcp.json` (offer to copy `pi/agent/mcp.json`); settings symlink not created; prompt revision `_0`;
-  no extra environment; entry point not linked onto PATH.
+- No `mcp.json` (offer to copy `pi/agent/mcp.json`); no extensions; prompt revision `_0`; no extra
+  environment; entry point not linked onto PATH; Paseo provider generated but not installed.
 - Skills the user names are copied whole, including `references/` and `scripts/`. A skill that is a
   router for sibling skills (like `hyperframes`) is copied alone; don't pull in siblings unasked.
-- Never put credentials, tokens or API keys in a profile; they belong in the gitignored runtime
-  files Pi creates itself.
+- Never put credentials, tokens or API keys in a profile, an entry point or `paseo/config.json`;
+  they belong in the gitignored runtime files Pi creates itself.
 
 ## Auditing an existing profile
 
-Check the five pieces exist and agree: the `pi/agent_<name>/` dir, the prompt file named in the entry
-point's `PROFILE` block, the entry point's mode (755) and `bash -n`, the `pi/link.sh` and `pi/.gitignore`
-lines, and whether `install.sh` has linked it. Report gaps and offer fixes; don't rewrite a
-profile's prompt or settings unasked.
+Check the pieces exist and agree: the `pi/agent_<name>/` dir and its own tracked (non-link)
+`settings.json`, the prompt file named in the entry point's `PROFILE` block, the entry point's mode
+(755), `bash -n` and line-3 label, whether `auth.json` / `models.json` are real files (not leftover
+symlinks to a shared file; `pi/copy-auth.sh` replaces those), whether `install.sh` has linked it,
+and the Paseo provider (`paseo/gen-pi-providers.py --check`). Report gaps and offer fixes; don't
+rewrite a profile's prompt or settings unasked.
 
 ## Sandbox note
 
 When running under a sandbox, the harness-dots repo may be outside the project directory and writes
-there need the sandbox lifted for that command. Request it for the scaffold run only.
+there need the sandbox lifted for that command. Request it for the scaffold run only. Writes to
+`~/.paseo`, `~/.local/bin` and `~/.config` are outside it too.
