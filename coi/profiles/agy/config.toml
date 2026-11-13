@@ -1,0 +1,15 @@
+# Custom coi build profile extending coi-default with Antigravity CLI (agy)
+# and Command Code CLI (command-code) managed via mise (unpinned @latest).
+
+[container]
+image = "coi-agy"
+
+[container.build]
+base = "coi-default"
+commands = [
+  "su - code -c 'mise settings add minimum_release_age_excludes antigravity-cli && mise settings add minimum_release_age_excludes npm:command-code'",
+  "su - code -c 'mise use --global antigravity-cli@latest npm:command-code@latest'",
+  "for bin in agy cmd cmdc command-code; do ln -sf \"/home/code/.local/share/mise/shims/$bin\" \"/usr/local/bin/$bin\"; done",
+  "cat /home/code/.config/mise/config.toml",
+  "su - code -c '/usr/local/bin/agy --version && /usr/local/bin/cmd --version'",
+]
