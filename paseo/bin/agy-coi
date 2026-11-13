@@ -1,0 +1,293 @@
+#!/usr/bin/env node
+"use strict";
+
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const readline = require("node:readline");
+const { spawn, execFileSync } = require("node:child_process");
+
+function resolvePaseoHome() {
+  const envHome = process.env.PASEO_HOME;
+  if (envHome && envHome.trim()) {
+    const trimmed = envHome.trim();
+    if (trimmed === "~") return os.homedir();
+    if (trimmed.startsWith("~/")) return path.join(os.homedir(), trimmed.slice(2));
+    return path.resolve(trimmed);
+  }
+  return path.resolve(__dirname, "..");
+}
+
+const PASEO_HOME = resolvePaseoHome();
+const STATE_DIR = path.join(PASEO_HOME, "coi-agy");
+const COI_CONFIG = path.join(PASEO_HOME, "coi-agy.toml");
+const PROBE_WORKSPACE = path.join(STATE_DIR, "probe-workspace");
+const VERSION_FILE = path.join(STATE_DIR, "version.txt");
+const INIT_CACHE_FILE = path.join(STATE_DIR, "acp-init-result.json");
+
+const FORWARD_ENV_VARS = [
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "GOOGLE_CLOUD_PROJECT",
+  "GOOGLE_CLOUD_LOCATION",
+  "NO_BROWSER",
+];
+
+function ensureDirs() {
+  for (const sub of [
+    "antigravity-cli",
+    "gemini-config",
+    "antigravity-secrets",
+    "cache",
+    "probe-workspace",
+  ]) {
+    fs.mkdirSync(path.join(STATE_DIR, sub), { recursive: true });
+  }
+}
+
+// Fast-path --version probe (Paseo diagnostic uses a 5s timeout).
+// On a cache miss, query the container and persist version.txt for future probes.
+if (process.argv.includes("--version")) {
+  if (fs.existsSync(VERSION_FILE)) {
+    const v = fs.readFileSync(VERSION_FILE, "utf8").trim();
+    if (v) {
+      process.stdout.write(`${v}\n`);
+      process.exit(0);
+    }
+  }
+  ensureDirs();
+  const out = execFileSync(
+    "coi",
+    ["run", "-w", PROBE_WORKSPACE, "--", "agy", "--version"],
+    {
+      env: { ...process.env, COI_CONFIG },
+      encoding: "utf8",
+    }
+  );
+  const version = out.trim();
+  if (version) {
+    try {
+      fs.writeFileSync(VERSION_FILE, `${version}\n`);
+    } catch {
+      // Non-fatal cache write failure.
+    }
+    process.stdout.write(`${version}\n`);
+  } else {
+    process.stdout.write(out);
+  }
+  process.exit(0);
+}
+
+ensureDirs();
+
+let initCache = null;
+try {
+  if (fs.existsSync(INIT_CACHE_FILE)) {
+    initCache = JSON.parse(fs.readFileSync(INIT_CACHE_FILE, "utf8"));
+  }
+} catch {
+  initCache = null;
+}
+
+const SESSION_METHODS = new Set([
+  "session/new",
+  "session/load",
+  "session/resume",
+]);
+
+let savedInitReq = null;
+let cachedInitReplied = false;
+let child = null;
+let internalInitId = null;
+let initHandshaken = false;
+let stdinEnded = false;
+const pendingForChild = [];
+
+function buildEnvArgs() {
+  const envArgs = [];
+  for (const key of FORWARD_ENV_VARS) {
+    if (Object.prototype.hasOwnProperty.call(process.env, key) && process.env[key] !== undefined) {
+      envArgs.push(`${key}=${process.env[key]}`);
+    }
+  }
+  return envArgs;
+}
+
+function resolveWorkspace(requestedCwd) {
+  const home = os.homedir();
+  if (!requestedCwd || requestedCwd === home || requestedCwd === "/") {
+    return { ws: PROBE_WORKSPACE, rewrittenCwd: PROBE_WORKSPACE };
+  }
+  try {
+    if (fs.statSync(requestedCwd).isDirectory()) {
+      return { ws: requestedCwd, rewrittenCwd: null };
+    }
+  } catch {
+    // Fall back if requested workspace is absent on host.
+  }
+  return { ws: PROBE_WORKSPACE, rewrittenCwd: PROBE_WORKSPACE };
+}
+
+function startCoiForMessage(msg) {
+  const requestedCwd = msg?.params?.cwd;
+  const { ws, rewrittenCwd } = resolveWorkspace(requestedCwd);
+  if (rewrittenCwd && msg && msg.params && typeof msg.params === "object") {
+    msg.params.cwd = rewrittenCwd;
+  }
+
+  const envArgs = buildEnvArgs();
+  const coiArgs = ["run", "-w", ws, "--"];
+  if (envArgs.length > 0) {
+    coiArgs.push("env", ...envArgs);
+  }
+  coiArgs.push(
+    "agy",
+    "acp",
+    "--dangerously-skip-permissions",
+    "--disable-telemetry"
+  );
+
+  child = spawn("coi", coiArgs, {
+    env: { ...process.env, COI_CONFIG },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+
+  child.stderr.on("data", (chunk) => {
+    process.stderr.write(chunk);
+  });
+
+  child.on("error", (err) => {
+    process.stderr.write(`Failed to spawn coi: ${err.message}\n`);
+    process.exit(1);
+  });
+
+  child.on("close", (code, signal) => {
+    if (signal) {
+      process.kill(process.pid, signal);
+    } else {
+      process.exit(code ?? 0);
+    }
+  });
+
+  const childRl = readline.createInterface({
+    input: child.stdout,
+    crlfDelay: Infinity,
+  });
+
+  childRl.on("line", (line) => {
+    if (!initHandshaken) {
+      let parsed = null;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        parsed = null;
+      }
+      if (parsed && parsed.id === internalInitId) {
+        initHandshaken = true;
+        if (parsed.result) {
+          try {
+            fs.writeFileSync(INIT_CACHE_FILE, JSON.stringify(parsed.result) + "\n");
+          } catch {
+            // Non-fatal cache refresh failure.
+          }
+        }
+        if (!cachedInitReplied) {
+          const reply = { ...parsed, id: savedInitReq.id };
+          process.stdout.write(JSON.stringify(reply) + "\n");
+        }
+        if (msg && msg.method !== "__no_session__") {
+          child.stdin.write(JSON.stringify(msg) + "\n");
+        }
+        while (pendingForChild.length > 0) {
+          child.stdin.write(pendingForChild.shift() + "\n");
+        }
+        if (stdinEnded) {
+          child.stdin.end();
+        }
+        return;
+      }
+    }
+    process.stdout.write(line + "\n");
+  });
+
+  internalInitId = "__coi_init__";
+  const forwardedInit = savedInitReq
+    ? { ...savedInitReq, id: internalInitId }
+    : {
+        jsonrpc: "2.0",
+        id: internalInitId,
+        method: "initialize",
+        params: { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: "Paseo", version: "dev" } },
+      };
+  child.stdin.write(JSON.stringify(forwardedInit) + "\n");
+}
+
+const stdinRl = readline.createInterface({
+  input: process.stdin,
+  crlfDelay: Infinity,
+});
+
+stdinRl.on("line", (line) => {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return;
+  }
+
+  if (child) {
+    if (initHandshaken) {
+      child.stdin.write(line + "\n");
+    } else {
+      pendingForChild.push(line);
+    }
+    return;
+  }
+
+  let msg = null;
+  try {
+    msg = JSON.parse(trimmed);
+  } catch {
+    return;
+  }
+
+  if (msg.method === "initialize" && !savedInitReq) {
+    savedInitReq = msg;
+    if (initCache) {
+      cachedInitReplied = true;
+      process.stdout.write(
+        JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: initCache }) + "\n"
+      );
+      return;
+    }
+    // No init cache yet: fall back to probe workspace immediately.
+    startCoiForMessage({ method: "__no_session__" });
+    return;
+  }
+
+  if (SESSION_METHODS.has(msg.method) || (msg.params && typeof msg.params.cwd === "string")) {
+    startCoiForMessage(msg);
+    return;
+  }
+
+  // Any other pre-session message forces container launch on probe workspace.
+  startCoiForMessage(msg);
+});
+
+stdinRl.on("close", () => {
+  stdinEnded = true;
+  if (!child) {
+    process.exit(0);
+  }
+  if (initHandshaken) {
+    child.stdin.end();
+  }
+});
+
+for (const sig of ["SIGINT", "SIGTERM"]) {
+  process.on(sig, () => {
+    if (child && !child.killed) {
+      child.kill(sig);
+    } else {
+      process.exit(0);
+    }
+  });
+}

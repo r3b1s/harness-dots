@@ -52,6 +52,40 @@
         "env": {
           "PI_CODING_AGENT_DIR": "/home/t/Dotfiles/harness-dots/pi/agent"
         }
+      },
+      "claude-coi": {
+        "extends": "claude",
+        "label": "Claude (coi)",
+        "description": "Claude Code wrapped with coi using the coi-default container image",
+        "command": [
+          "$PASEO_HOME/bin/claude-coi"
+        ],
+        "env": {
+          "CLAUDE_CONFIG_DIR": "$PASEO_HOME/coi-claude"
+        },
+        "paseoTools": {
+          "enabled": false
+        }
+      },
+      "agy-coi": {
+        "extends": "acp",
+        "label": "Antigravity (coi)",
+        "description": "Antigravity CLI (ACP) wrapped with coi using the coi-agy container image",
+        "command": [
+          "$PASEO_HOME/bin/agy-coi"
+        ],
+        "options": {
+          "clientCapabilities": {
+            "fs": {
+              "readTextFile": false,
+              "writeTextFile": false
+            },
+            "terminal": false
+          }
+        },
+        "paseoTools": {
+          "enabled": false
+        }
       }
     }
   },

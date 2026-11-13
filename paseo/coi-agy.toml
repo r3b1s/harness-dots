@@ -1,0 +1,52 @@
+# Coi configuration for Paseo's `agy-coi` custom ACP provider.
+# Loaded via COI_CONFIG by $PASEO_HOME/bin/agy-coi.
+#
+# Authentication inside the container supports both:
+#   1. OAuth login (persisted to /home/code/.config/antigravity/plugin-secrets.json
+#      via the dedicated writable mount below)
+#   2. API key / cloud env vars forwarded via forward_env (if set on host/Paseo)
+
+[container]
+image = "coi-agy"
+
+[paths]
+preserve_workspace_path = true
+
+[network]
+# Open mode avoids interactive sudo prompts for nftables when launched by the Paseo daemon.
+mode = "open"
+
+[security]
+# Host user lacks CAP_LINUX_IMMUTABLE on /usr/local/bin/coi; rely on read-only bind mounts.
+host_immutable = false
+
+[defaults]
+forward_env = [
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "GOOGLE_CLOUD_PROJECT",
+  "GOOGLE_CLOUD_LOCATION",
+]
+
+# Dedicated container state directories isolated from $HOME/.gemini and host keyring.
+[[mounts.default]]
+host = "$PASEO_HOME/coi-agy/antigravity-cli"
+container = "/home/code/.gemini/antigravity-cli"
+readonly = false
+
+[[mounts.default]]
+host = "$PASEO_HOME/coi-agy/gemini-config"
+container = "/home/code/.gemini/config"
+readonly = false
+
+# Stores OAuth tokens (plugin-secrets.json) inside the dedicated state dir when
+# signed in inside the container (fallback when desktop keyring is absent).
+[[mounts.default]]
+host = "$PASEO_HOME/coi-agy/antigravity-secrets"
+container = "/home/code/.config/antigravity"
+readonly = false
+
+[[mounts.default]]
+host = "$PASEO_HOME/coi-agy/cache"
+container = "/home/code/.cache/antigravity"
+readonly = false

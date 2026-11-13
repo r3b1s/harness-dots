@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+paseo_home="${PASEO_HOME:-$(cd -- "$script_dir/.." && pwd -P)}"
+case "$paseo_home" in
+  "~") paseo_home="$HOME" ;;
+  "~/"*) paseo_home="$HOME/${paseo_home#"~/"}" ;;
+esac
+
+export COI_CONFIG="$paseo_home/coi-claude.toml"
+mkdir -p "$paseo_home/coi-claude/projects"
+
+# Paseo's version probe (`--version`) and model-discovery probe
+# (`--no-session-persistence --tools ""`) use short timeouts (<=5s) and
+# `SIGKILL` after 200ms, which can interrupt `coi run` during container
+# boot/teardown and orphan ephemeral containers. Handle those read-only
+# metadata probes directly on the host; all real sessions and `auth status`
+# run inside `coi`.
+if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then
+  exec claude --version
+fi
+
+has_no_persist=0
+has_empty_tools=0
+prev=""
+for arg in "$@"; do
+  if [ "$arg" = "--no-session-persistence" ]; then
+    has_no_persist=1
+  fi
+  if [ "$prev" = "--tools" ] && [ -z "$arg" ]; then
+    has_empty_tools=1
+  fi
+  prev="$arg"
+done
+if [ "$has_no_persist" -eq 1 ] && [ "$has_empty_tools" -eq 1 ]; then
+  exec claude "$@"
+fi
+
+ws="${PWD}"
+if [ -z "$ws" ] || [ "$ws" = "/" ] || [ ! -d "$ws" ]; then
+  ws="/tmp"
+fi
+
+# Forward Paseo/Claude SDK environment variables into the container without
+# passing host CLAUDE_CONFIG_DIR (container claude uses /home/code/.claude,
+# whose projects/ dir is bind-mounted from $PASEO_HOME/coi-claude/projects).
+env_args=()
+for var in \
+  CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS \
+  CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING \
+  CLAUDE_CODE_ENTRYPOINT \
+  CLAUDE_AGENT_SDK_VERSION \
+  ANTHROPIC_API_KEY \
+  ANTHROPIC_AUTH_TOKEN \
+  ANTHROPIC_BASE_URL \
+  ANTHROPIC_MODEL \
+  ANTHROPIC_SMALL_FAST_MODEL \
+  ANTHROPIC_DEFAULT_HAIKU_MODEL \
+  ANTHROPIC_DEFAULT_SONNET_MODEL \
+  ANTHROPIC_DEFAULT_OPUS_MODEL \
+  CLAUDE_CODE_USE_BEDROCK \
+  CLAUDE_CODE_USE_VERTEX \
+  CLAUDE_CODE_USE_FOUNDRY \
+  CLAUDE_CODE_EFFORT_LEVEL \
+  CLAUDE_CODE_MAX_OUTPUT_TOKENS \
+  DISABLE_TELEMETRY \
+  DISABLE_ERROR_REPORTING
+do
+  if [ "${!var+set}" = "set" ]; then
+    env_args+=("${var}=${!var}")
+  fi
+done
+
+if [ "${#env_args[@]}" -gt 0 ]; then
+  exec coi run -w "$ws" -- env "${env_args[@]}" claude "$@"
+else
+  exec coi run -w "$ws" -- claude "$@"
+fi

@@ -1,7 +1,12 @@
 # paseo/ holds only authored config. Paseo's runtime state, logs, keys and the
 # live config.json (with UI changes and the daemon password) stay in
-# $PASEO_HOME (~/.paseo); install.sh copies config.json there, never links it.
+# $PASEO_HOME (~/.paseo); install.sh copies tracked files there, never links them.
 
-# install.sh backups, should one ever run with --home pointed here
+# install.sh backups/temps, should one ever run with --home pointed here
 *.bak
 .config.json.*
+.paseo-*
+
+# coi provider runtime state & OAuth secrets stay in $PASEO_HOME
+coi-claude/
+coi-agy/
