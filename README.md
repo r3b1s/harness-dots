@@ -24,9 +24,11 @@ Harness subcommands work through any of them: `pi-ctf install npm:pkg`, `vpi lis
 
 Everything specific to a profile (profile, prompt file, extra environment variables in `env_extra`) sits in the marked `PROFILE` block of its file. The real `pi` / `omp` binary must be on PATH; with mise, that means `mise activate` or its shims.
 
-## Paseo
+## Paseo and coi
 
-`paseo/config.json` is the tracked source for Paseo's `~/.paseo/config.json`. `paseo/install.sh` merges it into the live file (a copy, so the daemon password and UI edits never reach the repo; `--dry-run` shows the diff), then `paseo reload` applies it. `paseo/gen-pi-providers.py` adds one Paseo provider per pi profile (`pi`, `pi-ctf`, `pi-producer`), each launched through its entry point; pick them in Paseo's agent profiles. Details in [AGENTS.md](AGENTS.md#paseo).
+`paseo/config.json` is the tracked source for Paseo's `~/.paseo/config.json`, alongside `paseo/bin/` provider wrappers (`claude-coi`, `agy-coi`) and `paseo/coi-*.toml` runtime configs. `paseo/install.sh` renders `$PASEO_HOME`/`$HOME` placeholders and copies those files into `$PASEO_HOME` (default `~/.paseo`, merging `config.json` over the live copy so the daemon password and UI edits never reach the repo; `--dry-run` shows the diff), then `paseo reload` applies it. `paseo/gen-pi-providers.py` adds one Paseo provider per pi profile (`pi`, `pi-ctf`, `pi-producer`), each launched through its entry point; pick them in Paseo's agent profiles.
+
+`coi/` tracks `coi` image profiles (such as `coi/profiles/agy/config.toml` for the `coi-agy` image); `coi/install.sh` copies them into `$COI_HOME` (default `~/.coi`) without running `coi build`. Details in [AGENTS.md](AGENTS.md#paseo).
 
 ## Shared logins
 

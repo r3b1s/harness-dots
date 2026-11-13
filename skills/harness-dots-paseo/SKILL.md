@@ -21,10 +21,13 @@ itself, use the `pi-profile` skill.
 
 | Path | Role |
 |---|---|
-| `paseo/config.json` | tracked source for Paseo's settings |
-| `paseo/install.sh` | merges it into the live `$PASEO_HOME/config.json` |
+| `paseo/config.json` | tracked source for Paseo's settings (`$PASEO_HOME`/`$HOME` rendered at install) |
+| `paseo/bin/` | custom provider wrappers (`claude-coi`, `agy-coi`), copied to `$PASEO_HOME/bin/` |
+| `paseo/coi-*.toml` | `coi` runtime configs (`coi-claude.toml`, `coi-agy.toml`), rendered & copied to `$PASEO_HOME/` |
+| `paseo/install.sh` | merges `config.json` and copies `bin/*` + rendered `coi-*.toml` into `$PASEO_HOME` |
 | `paseo/gen-pi-providers.py` | writes one provider per Pi entry point into `paseo/config.json` |
-| `~/.paseo/` | Paseo's home (`PASEO_HOME`, set by the systemd unit `~/.config/systemd/user/paseo.service`): live `config.json`, runtime state, keys, logs |
+| `coi/profiles/`, `coi/install.sh` | tracked `coi` build profiles (e.g. `agy` for `coi-agy`) copied to `$COI_HOME` (`~/.coi`) |
+| `~/.paseo/` | Paseo's home (`PASEO_HOME`, set by the systemd unit `~/.config/systemd/user/paseo.service`): live `config.json`, deployed `bin/` & `coi-*.toml`, container state dirs (`coi-claude/`, `coi-agy/`), runtime state, keys, logs |
 
 **The live config is a copy, never a link, and nothing flows back automatically.** The daemon writes
 UI changes and the daemon password (`daemon.auth`, a hash) into `~/.paseo/config.json`; a symlink
@@ -34,8 +37,16 @@ change the user made in the app, copy that key into `paseo/config.json` by hand 
 
 `~/.paseo/config.json` is Paseo's only settings file: `agents.providers` (custom providers),
 `daemon.agentProfiles` (agent profiles made in the UI), daemon settings (`listen`, `cors`, `relay`,
-`mcp`), `app`, `features`. There is no `${VAR}` expansion, so provider `env` values are literal: a
-provider that needs an API key does not belong in the tracked file. Ask the user where it should go.
+`mcp`), `app`, `features`. Paseo does not expand `${VAR}` at runtime, so provider `env` values that
+need an API key do not belong in the tracked file (ask the user where it should go). Note that
+`paseo/install.sh` *does* expand literal `$PASEO_HOME` and `$HOME` placeholders inside
+`paseo/config.json` and `paseo/coi-*.toml` at install time so tracked paths stay portable; keep the
+wrappers in `paseo/bin/` free of hardcoded usernames by resolving `PASEO_HOME` at runtime.
+
+For `agy-coi`, `paseo/bin/agy-coi` self-populates `$PASEO_HOME/coi-agy/version.txt` on a `--version`
+cache miss and `$PASEO_HOME/coi-agy/acp-init-result.json` on ACP `initialize`, and expects `coi`,
+`node`, and the `coi-agy` image (`coi/profiles/agy/config.toml`) to already exist on the host. Neither
+`paseo/install.sh` nor `coi/install.sh` checks or builds container images or host binaries.
 
 ## Pi profiles as Paseo providers
 
@@ -83,11 +94,13 @@ paseo/gen-pi-providers.py             # writes the tracked file only
 paseo/gen-pi-providers.py --check     # exit 1 if stale
 ```
 
-**Apply to the live Paseo config** (writes `~/.paseo`; run only when the user asks):
+**Apply to the live Paseo / coi config** (writes `~/.paseo` / `~/.coi`; run only when the user asks):
 
 ```bash
-paseo/install.sh --dry-run            # diff of the live file
-paseo/install.sh --reload             # write it (backup: config.json.bak), then `paseo reload`
+paseo/install.sh --dry-run            # diff of config.json, bin/*, and coi-*.toml
+paseo/install.sh --reload             # copy files & merge config (backup: config.json.bak), then `paseo reload`
+coi/install.sh --dry-run              # diff of ~/.coi/profiles/*
+coi/install.sh                        # copy tracked coi profiles into $COI_HOME (~/.coi)
 ```
 
 Merge rules: objects merge key by key; arrays whose items all have an `id` (`daemon.agentProfiles`,

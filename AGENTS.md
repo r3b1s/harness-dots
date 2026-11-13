@@ -39,9 +39,14 @@ harness-dots/
 │   ├── profiles/<name>/agent/   named profiles (omp's native profile layout)
 │   └── bash/            _launch.bash, rc.bash, entry points (vomp)
 └── paseo/               tracked Paseo config; NOT Paseo's home (that stays ~/.paseo)
-    ├── config.json      source for ~/.paseo/config.json
-    ├── install.sh       merges config.json into the live copy
+    ├── bin/             copied into $PASEO_HOME/bin/ by paseo/install.sh (claude-coi, agy-coi)
+    ├── coi-*.toml       rendered ($PASEO_HOME/$HOME) and copied into $PASEO_HOME/ by paseo/install.sh
+    ├── config.json      source for ~/.paseo/config.json (also expands $PASEO_HOME/$HOME)
+    ├── install.sh       merges config.json and copies bin/* + coi-*.toml into $PASEO_HOME
     └── gen-pi-providers.py  writes a Paseo provider per pi profile into config.json
+└── coi/                 tracked coi profiles & configs; NOT coi's home (that stays ~/.coi)
+    ├── profiles/        profile definitions (e.g. profiles/agy/config.toml for coi-agy)
+    └── install.sh       copies profiles/* into $COI_HOME (default ~/.coi); never runs coi build
 ```
 
 ### What goes where
@@ -222,8 +227,18 @@ the daemon password (`daemon.auth`). Everything else in the home is runtime stat
   `PI_CODING_AGENT_DIR` (`env`), which Paseo itself reads for the profile's `mcp.json` and session
   import. Rerun it after adding, removing or moving a profile (`--check` reports drift); it leaves
   other providers and hand-added keys alone.
-- Provider `env` values are stored literally (no `${VAR}` expansion), so a provider that needs an
-  API key does not belong in the tracked file.
+- **Custom `coi` providers (`claude-coi`, `agy-coi`).** Provider wrapper scripts live in
+  `paseo/bin/` and container configs in `paseo/coi-*.toml`. Avoid hardcoding `$HOME` or a username:
+  `paseo/config.json` and `paseo/coi-*.toml` use `$PASEO_HOME` (and `$HOME`) placeholders that
+  `paseo/install.sh` expands before copying them into `$PASEO_HOME` (always copies, never
+  symlinks), while the wrappers resolve `PASEO_HOME` at runtime. Their container state dirs
+  (`$PASEO_HOME/coi-claude`, `$PASEO_HOME/coi-agy`) stay outside the repo in `$PASEO_HOME`; `coi`
+  image profiles (such as `coi-agy`) live separately in `coi/` (`coi/install.sh` copies them into
+  `$COI_HOME`). Neither `paseo/install.sh` nor `coi/install.sh` checks or builds `coi` images or
+  installs host binaries (`claude`, `node`, `coi`).
+- Provider `env` values are stored literally (no `${VAR}` expansion at daemon runtime; only
+  `$PASEO_HOME`/`$HOME` are expanded at `paseo/install.sh` time), so a provider that needs an API
+  key does not belong in the tracked file.
 
 ## Rules for agents working in this repo
 
@@ -231,11 +246,11 @@ the daemon password (`daemon.auth`). Everything else in the home is runtime stat
   `models.yml`, `secrets.yml`, `.env`. Check `git status` before staging.
 - Never point one harness at another harness's directory, and never wire a pi profile into an omp
   launcher or the reverse. Don't point either harness at `~/.pi` or `~/.omp`.
-- `install.sh`, `pi/copy-auth.sh` and `paseo/install.sh` write outside the files they live next to
-  (`~/.local/bin`, profile credentials, `~/.paseo`). Run them with `--dry-run` first, and for real only
-  when the user asks.
+- `install.sh`, `pi/copy-auth.sh`, `paseo/install.sh` and `coi/install.sh` write outside the files
+  they live next to (`~/.local/bin`, profile credentials, `~/.paseo`, `~/.coi`). Run them with
+  `--dry-run` first, and for real only when the user asks.
 - The global mise config (`~/.config/mise/config.toml`, from the mise-dots repo) used to hold
   harness tasks; they are being moved here. Don't add new harness tasks there.
-- Verify bash changes with `bash -n` on every touched file, plus a smoke test through the real
-  binary (`vpi --version`, `vomp --version`).
+- Verify bash changes with `bash -n` on every touched file, Node.js scripts with `node --check`, plus
+  a smoke test through the real binary (`vpi --version`, `vomp --version`).
 - Don't commit unless the user asks.
