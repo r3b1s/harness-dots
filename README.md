@@ -26,9 +26,9 @@ Everything specific to a profile (profile, prompt file, extra environment variab
 
 ## Paseo and coi
 
-`paseo/config.json` is the tracked source for Paseo's `~/.paseo/config.json`, alongside `paseo/bin/` provider wrappers (`claude-coi`, `agy-coi`) and `paseo/coi-*.toml` runtime configs. `paseo/install.sh` renders `$PASEO_HOME`/`$HOME` placeholders and copies those files into `$PASEO_HOME` (default `~/.paseo`, merging `config.json` over the live copy so the daemon password and UI edits never reach the repo; `--dry-run` shows the diff), then `paseo reload` applies it. `paseo/gen-pi-providers.py` adds one Paseo provider per pi profile (`pi`, `pi-ctf`, `pi-producer`), each launched through its entry point; pick them in Paseo's agent profiles.
+`paseo/config.json` is the tracked source for Paseo's `~/.paseo/config.json`, alongside `paseo/bin/` provider wrappers (`claude-coi`, `agy-coi`). `paseo/install.sh` expands `$PASEO_HOME`/`$COI_HOME`/`$HOME` placeholders and copies them into `$PASEO_HOME` (default `~/.paseo`, merging `config.json` over the live copy so the daemon password and UI edits never reach the repo; `--dry-run` shows the diff), then `paseo reload` applies it. `paseo/gen-pi-providers.py` adds one Paseo provider per pi profile (`pi`, `pi-ctf`, `pi-producer`), each launched through its entry point; pick them in Paseo's agent profiles.
 
-`coi/` tracks `coi` image profiles (such as `coi/profiles/agy/config.toml` for the `coi-agy` image); `coi/install.sh` copies them into `$COI_HOME` (default `~/.coi`) without running `coi build`. Details in [AGENTS.md](AGENTS.md#paseo).
+`coi/` tracks `coi` profiles (`coi/profiles/agy/config.toml`, `coi/profiles/claude/config.toml`) defining both the `coi-agy` image build and isolated `$COI_HOME/state/` mounts used by `claude-coi` and `agy-coi` (`--profile claude` / `--profile agy`); `coi/install.sh` expands placeholders and copies them into `$COI_HOME` (default `~/.coi`) without running `coi build`. Details in [AGENTS.md](AGENTS.md#paseo).
 
 ## Shared logins
 

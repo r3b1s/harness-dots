@@ -40,13 +40,12 @@ harness-dots/
 │   └── bash/            _launch.bash, rc.bash, entry points (vomp)
 └── paseo/               tracked Paseo config; NOT Paseo's home (that stays ~/.paseo)
     ├── bin/             copied into $PASEO_HOME/bin/ by paseo/install.sh (claude-coi, agy-coi)
-    ├── coi-*.toml       rendered ($PASEO_HOME/$HOME) and copied into $PASEO_HOME/ by paseo/install.sh
-    ├── config.json      source for ~/.paseo/config.json (also expands $PASEO_HOME/$HOME)
-    ├── install.sh       merges config.json and copies bin/* + coi-*.toml into $PASEO_HOME
+    ├── config.json      source for ~/.paseo/config.json (expands $PASEO_HOME/$COI_HOME/$HOME)
+    ├── install.sh       merges config.json and copies bin/* into $PASEO_HOME
     └── gen-pi-providers.py  writes a Paseo provider per pi profile into config.json
 └── coi/                 tracked coi profiles & configs; NOT coi's home (that stays ~/.coi)
-    ├── profiles/        profile definitions (e.g. profiles/agy/config.toml for coi-agy)
-    └── install.sh       copies profiles/* into $COI_HOME (default ~/.coi); never runs coi build
+    ├── profiles/        profile definitions (`agy`, `claude`; mounts + image builds)
+    └── install.sh       expands $COI_HOME/$HOME and copies profiles/* into $COI_HOME (~/.coi)
 ```
 
 ### What goes where
@@ -207,12 +206,14 @@ config in `omp/profiles/<name>/agent/`.
 [Paseo](https://paseo.sh) runs pi (and other harnesses) from a daemon. Its home is `$PASEO_HOME`
 (`~/.paseo`; the systemd unit sets it explicitly), and `config.json` there is its only settings
 file: providers (`agents.providers`), agent profiles (`daemon.agentProfiles`), daemon settings, and
-the daemon password (`daemon.auth`). Everything else in the home is runtime state and keys, so
-`PASEO_HOME` stays at `~/.paseo` and only `config.json` is tracked, in `paseo/config.json`.
+the daemon password (`daemon.auth`). Everything else in the home is runtime state, keys, and
+deployed wrappers, so `PASEO_HOME` stays at `~/.paseo` and only `paseo/config.json` and
+`paseo/bin/` are tracked.
 
-- **A copy, never a link.** `paseo/install.sh` writes the live `~/.paseo/config.json`; nothing
-  flows back. The daemon writes UI changes and the password into the live file, so a symlink would
-  put them in this repo. To keep a UI change, copy it into `paseo/config.json` by hand.
+- **A copy, never a link.** `paseo/install.sh` writes the live `~/.paseo/config.json` and copies
+  `paseo/bin/*` into `$PASEO_HOME/bin/`; nothing flows back. The daemon writes UI changes and the
+  password into the live `config.json`, so a symlink would put them in this repo. To keep a UI
+  change, copy it into `paseo/config.json` by hand.
 - **Merge by default.** `install.sh` deep-merges the tracked file over the live one: objects key by
   key, arrays of `id`-bearing objects (agent and terminal profiles) by `id`, everything else
   replaced. Live-only keys survive, which is how the password and UI-made profiles are kept; it also
@@ -227,18 +228,28 @@ the daemon password (`daemon.auth`). Everything else in the home is runtime stat
   `PI_CODING_AGENT_DIR` (`env`), which Paseo itself reads for the profile's `mcp.json` and session
   import. Rerun it after adding, removing or moving a profile (`--check` reports drift); it leaves
   other providers and hand-added keys alone.
-- **Custom `coi` providers (`claude-coi`, `agy-coi`).** Provider wrapper scripts live in
-  `paseo/bin/` and container configs in `paseo/coi-*.toml`. Avoid hardcoding `$HOME` or a username:
-  `paseo/config.json` and `paseo/coi-*.toml` use `$PASEO_HOME` (and `$HOME`) placeholders that
-  `paseo/install.sh` expands before copying them into `$PASEO_HOME` (always copies, never
-  symlinks), while the wrappers resolve `PASEO_HOME` at runtime. Their container state dirs
-  (`$PASEO_HOME/coi-claude`, `$PASEO_HOME/coi-agy`) stay outside the repo in `$PASEO_HOME`; `coi`
-  image profiles (such as `coi-agy`) live separately in `coi/` (`coi/install.sh` copies them into
-  `$COI_HOME`). Neither `paseo/install.sh` nor `coi/install.sh` checks or builds `coi` images or
-  installs host binaries (`claude`, `node`, `coi`).
 - Provider `env` values are stored literally (no `${VAR}` expansion at daemon runtime; only
-  `$PASEO_HOME`/`$HOME` are expanded at `paseo/install.sh` time), so a provider that needs an API
+  `$PASEO_HOME`/`$COI_HOME`/`$HOME` are expanded at install time), so a provider that needs an API
   key does not belong in the tracked file.
+
+### Custom `coi` providers: what `coi` owns vs what `paseo` owns
+
+Containerized Paseo providers (`claude-coi`, `agy-coi`) intentionally split sandbox configuration
+from Paseo adapter plumbing so interactive `coi` shells (`coi shell --profile <name> --debug`) and
+Paseo launches share the exact same container setup without duplicating config:
+
+| Concern | Owned by **`coi`** (`coi/` -> `$COI_HOME`, default `~/.coi`) | Owned by **`paseo`** (`paseo/` -> `$PASEO_HOME`, default `~/.paseo`) |
+|---|---|---|
+| Profiles & container builds | `coi/profiles/<name>/config.toml` (`[container]`, `[container.build]`, e.g. `coi-agy`) | — (wrappers pass `--profile <name>`) |
+| Sandbox policy & mounts | `[paths]`, `[network]`, `[security]`, `[[credentials]]`, `forward_env`, `[[mounts]]` in `coi/profiles/` | — (no `coi-*.toml` or `COI_CONFIG` overrides in `paseo/`) |
+| Container-mounted agent state | `$COI_HOME/state/<name>/` (e.g. `~/.coi/state/claude/projects`, `~/.coi/state/agy/{antigravity-cli,gemini-config,antigravity-secrets,cache}`) | `claude-coi` reads `$COI_HOME/state/claude` via `env.CLAUDE_CONFIG_DIR` in `paseo/config.json` |
+| Provider wiring & adapter scripts | — | `paseo/config.json` (`agents.providers.{claude-coi,agy-coi}`: `command`, ACP `clientCapabilities`, `paseoTools`) and `paseo/bin/{claude-coi,agy-coi}` (`coi run --profile <name>`, host metadata fast-paths, `agy acp` proxy) |
+| Paseo-only adapter caches | — | `$PASEO_HOME/coi-agy/` (`version.txt`, `acp-init-result.json`, `probe-workspace`) |
+| Installation & portability | `coi/install.sh` expands `$COI_HOME`/`$HOME` and copies `profiles/*` | `paseo/install.sh` expands `$PASEO_HOME`/`$COI_HOME`/`$HOME`, merges `config.json`, and copies `bin/*`; `agy-coi` resolves `PASEO_HOME` at runtime |
+
+Neither `paseo/install.sh` nor `coi/install.sh` checks or builds `coi` images or installs host
+binaries (`claude`, `node`, `coi`). Place container runtime configuration and mounts in `coi/profiles/`,
+never in `paseo/`, and avoid hardcoding `$HOME` or usernames anywhere.
 
 ## Rules for agents working in this repo
 
