@@ -1,0 +1,74 @@
+# Antigravity CLI (agy) + Command Code CLI with a controllable desktop: the
+# `agy` profile's tools layered on `coi-desktop`. Builds `coi-agy-desktop`,
+# which the `commandcode-desktop` profile also runs.
+#
+#   coi build --profile desktop && coi build --profile agy-desktop
+#
+# Shares agy state ($COI_HOME/state/agy/) with the `agy` profile.
+
+forward_env = [
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "GOOGLE_CLOUD_PROJECT",
+  "GOOGLE_CLOUD_LOCATION",
+]
+
+[container]
+image = "coi-agy-desktop"
+
+# Keep these commands in step with profiles/agy/config.toml.
+[container.build]
+base = "coi-desktop"
+commands = [
+  "su - code -c 'mise settings add minimum_release_age_excludes antigravity-cli && mise settings add minimum_release_age_excludes npm:command-code'",
+  "su - code -c 'mise use --global antigravity-cli@latest npm:command-code@latest'",
+  "for bin in agy cmd cmdc command-code; do ln -sf \"/home/code/.local/share/mise/shims/$bin\" \"/usr/local/bin/$bin\"; done",
+  "cat /home/code/.config/mise/config.toml",
+  "su - code -c '/usr/local/bin/agy --version && /usr/local/bin/cmd --version'",
+  # Command Code reads its user-scope MCP servers from ~/.commandcode/mcp.json.
+  "su - code -c 'cd /tmp && cmd mcp add --transport stdio --scope user desktop -- /usr/local/bin/desktop-mcp && grep -q desktop-mcp ~/.commandcode/mcp.json && grep -q desktop.: ~/.commandcode/mcp.json'",
+]
+
+[paths]
+preserve_workspace_path = true
+
+[network]
+# Open mode avoids interactive sudo prompts for nftables when launched headless.
+mode = "open"
+
+[security]
+# Host user lacks CAP_LINUX_IMMUTABLE on /usr/local/bin/coi; rely on read-only bind mounts.
+host_immutable = false
+
+# Lets processes started by `coi run`/`coi shell` reach the desktop session that
+# systemd --user runs for `code` (uid 1000).
+[environment]
+DISPLAY = ":0"
+XDG_RUNTIME_DIR = "/run/user/1000"
+DBUS_SESSION_BUS_ADDRESS = "unix:path=/run/user/1000/bus"
+
+# Selkies remote desktop, published on 127.0.0.1 with a host port allocated per
+# workspace/slot (COI_PORT_DESKTOP inside; `coi-desktop url` on the host).
+[ports]
+map = [{ name = "desktop", container = 8080 }]
+
+# Dedicated container state directories isolated from $HOME/.gemini and host keyring.
+[[mounts]]
+host = "$COI_HOME/state/agy/antigravity-cli"
+container = "/home/code/.gemini/antigravity-cli"
+readonly = false
+
+[[mounts]]
+host = "$COI_HOME/state/agy/gemini-config"
+container = "/home/code/.gemini/config"
+readonly = false
+
+[[mounts]]
+host = "$COI_HOME/state/agy/antigravity-secrets"
+container = "/home/code/.config/antigravity"
+readonly = false
+
+[[mounts]]
+host = "$COI_HOME/state/agy/cache"
+container = "/home/code/.cache/antigravity"
+readonly = false

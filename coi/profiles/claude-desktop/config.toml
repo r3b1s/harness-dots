@@ -1,0 +1,37 @@
+# Claude Code with a controllable desktop: the `claude` profile on the
+# `coi-desktop` image (build it with `coi build --profile desktop`).
+# Shares Claude credentials and transcripts with the `claude` profile.
+
+[container]
+image = "coi-desktop"
+
+[paths]
+preserve_workspace_path = true
+
+[network]
+# Open mode avoids interactive sudo prompts for nftables when launched headless.
+mode = "open"
+
+[security]
+# Host user lacks CAP_LINUX_IMMUTABLE on /usr/local/bin/coi; rely on read-only bind mounts.
+host_immutable = false
+
+# Lets processes started by `coi run`/`coi shell` reach the desktop session that
+# systemd --user runs for `code` (uid 1000).
+[environment]
+DISPLAY = ":0"
+XDG_RUNTIME_DIR = "/run/user/1000"
+DBUS_SESSION_BUS_ADDRESS = "unix:path=/run/user/1000/bus"
+
+# Selkies remote desktop, published on 127.0.0.1 with a host port allocated per
+# workspace/slot (COI_PORT_DESKTOP inside; `coi-desktop url` on the host).
+[ports]
+map = [{ name = "desktop", container = 8080 }]
+
+[[credentials]]
+bundle = "claude"
+
+[[mounts]]
+host = "$COI_HOME/state/claude/projects"
+container = "/home/code/.claude/projects"
+readonly = false
