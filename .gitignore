@@ -16,6 +16,8 @@ secret-placeholder.key
 
 # Harness-specific Project Artifacts
 .claude
+.commandcode
+.codex
 
 # Python bytecode (skills/*/scripts)
 __pycache__/
