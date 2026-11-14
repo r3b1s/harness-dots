@@ -19,11 +19,11 @@ function resolvePaseoHome() {
 }
 
 const PASEO_HOME = resolvePaseoHome();
-const STATE_DIR = path.join(PASEO_HOME, "coi-agy");
-const COI_CONFIG = path.join(PASEO_HOME, "coi-agy.toml");
-const PROBE_WORKSPACE = path.join(STATE_DIR, "probe-workspace");
-const VERSION_FILE = path.join(STATE_DIR, "version.txt");
-const INIT_CACHE_FILE = path.join(STATE_DIR, "acp-init-result.json");
+const CACHE_DIR = path.join(PASEO_HOME, "coi-agy");
+const PROBE_WORKSPACE = path.join(CACHE_DIR, "probe-workspace");
+const VERSION_FILE = path.join(CACHE_DIR, "version.txt");
+const INIT_CACHE_FILE = path.join(CACHE_DIR, "acp-init-result.json");
+const COI_PROFILE = "agy";
 
 const FORWARD_ENV_VARS = [
   "GEMINI_API_KEY",
@@ -33,16 +33,38 @@ const FORWARD_ENV_VARS = [
   "NO_BROWSER",
 ];
 
-function ensureDirs() {
-  for (const sub of [
-    "antigravity-cli",
-    "gemini-config",
-    "antigravity-secrets",
-    "cache",
-    "probe-workspace",
-  ]) {
-    fs.mkdirSync(path.join(STATE_DIR, sub), { recursive: true });
+function ensureCacheDirs() {
+  fs.mkdirSync(PROBE_WORKSPACE, { recursive: true });
+}
+
+/**
+ * Strip ACP `thought_level` config options so Paseo hides the separate
+ * thinking picker for models whose IDs already encode effort levels.
+ */
+function stripThoughtLevelOption(payload) {
+  if (!payload || typeof payload !== "object") {
+    return false;
   }
+  let changed = false;
+  if (Array.isArray(payload.result?.configOptions)) {
+    const filtered = payload.result.configOptions.filter(
+      (opt) => opt?.category !== "thought_level"
+    );
+    if (filtered.length !== payload.result.configOptions.length) {
+      payload.result.configOptions = filtered;
+      changed = true;
+    }
+  }
+  if (Array.isArray(payload.params?.update?.configOptions)) {
+    const filtered = payload.params.update.configOptions.filter(
+      (opt) => opt?.category !== "thought_level"
+    );
+    if (filtered.length !== payload.params.update.configOptions.length) {
+      payload.params.update.configOptions = filtered;
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 // Fast-path --version probe (Paseo diagnostic uses a 5s timeout).
@@ -55,14 +77,11 @@ if (process.argv.includes("--version")) {
       process.exit(0);
     }
   }
-  ensureDirs();
+  ensureCacheDirs();
   const out = execFileSync(
     "coi",
-    ["run", "-w", PROBE_WORKSPACE, "--", "agy", "--version"],
-    {
-      env: { ...process.env, COI_CONFIG },
-      encoding: "utf8",
-    }
+    ["run", "--profile", COI_PROFILE, "-w", PROBE_WORKSPACE, "--", "agy", "--version"],
+    { encoding: "utf8" }
   );
   const version = out.trim();
   if (version) {
@@ -78,7 +97,7 @@ if (process.argv.includes("--version")) {
   process.exit(0);
 }
 
-ensureDirs();
+ensureCacheDirs();
 
 let initCache = null;
 try {
@@ -136,7 +155,7 @@ function startCoiForMessage(msg) {
   }
 
   const envArgs = buildEnvArgs();
-  const coiArgs = ["run", "-w", ws, "--"];
+  const coiArgs = ["run", "--profile", COI_PROFILE, "-w", ws, "--"];
   if (envArgs.length > 0) {
     coiArgs.push("env", ...envArgs);
   }
@@ -148,7 +167,6 @@ function startCoiForMessage(msg) {
   );
 
   child = spawn("coi", coiArgs, {
-    env: { ...process.env, COI_CONFIG },
     stdio: ["pipe", "pipe", "pipe"],
   });
 
@@ -175,37 +193,43 @@ function startCoiForMessage(msg) {
   });
 
   childRl.on("line", (line) => {
-    if (!initHandshaken) {
-      let parsed = null;
+    let parsed = null;
+    if (!initHandshaken || line.includes("configOptions")) {
       try {
         parsed = JSON.parse(line);
       } catch {
         parsed = null;
       }
-      if (parsed && parsed.id === internalInitId) {
-        initHandshaken = true;
-        if (parsed.result) {
-          try {
-            fs.writeFileSync(INIT_CACHE_FILE, JSON.stringify(parsed.result) + "\n");
-          } catch {
-            // Non-fatal cache refresh failure.
-          }
+    }
+
+    if (!initHandshaken && parsed && parsed.id === internalInitId) {
+      initHandshaken = true;
+      if (parsed.result) {
+        try {
+          fs.writeFileSync(INIT_CACHE_FILE, JSON.stringify(parsed.result) + "\n");
+        } catch {
+          // Non-fatal cache refresh failure.
         }
-        if (!cachedInitReplied) {
-          const reply = { ...parsed, id: savedInitReq.id };
-          process.stdout.write(JSON.stringify(reply) + "\n");
-        }
-        if (msg && msg.method !== "__no_session__") {
-          child.stdin.write(JSON.stringify(msg) + "\n");
-        }
-        while (pendingForChild.length > 0) {
-          child.stdin.write(pendingForChild.shift() + "\n");
-        }
-        if (stdinEnded) {
-          child.stdin.end();
-        }
-        return;
       }
+      if (!cachedInitReplied) {
+        const reply = { ...parsed, id: savedInitReq.id };
+        process.stdout.write(JSON.stringify(reply) + "\n");
+      }
+      if (msg && msg.method !== "__no_session__") {
+        child.stdin.write(JSON.stringify(msg) + "\n");
+      }
+      while (pendingForChild.length > 0) {
+        child.stdin.write(pendingForChild.shift() + "\n");
+      }
+      if (stdinEnded) {
+        child.stdin.end();
+      }
+      return;
+    }
+
+    if (parsed && stripThoughtLevelOption(parsed)) {
+      process.stdout.write(JSON.stringify(parsed) + "\n");
+      return;
     }
     process.stdout.write(line + "\n");
   });

@@ -7,6 +7,5 @@
 .config.json.*
 .paseo-*
 
-# coi provider runtime state & OAuth secrets stay in $PASEO_HOME
-coi-claude/
+# agy-coi host-side ACP adapter cache (version.txt, acp-init-result.json, probe-workspace)
 coi-agy/

@@ -1,16 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-paseo_home="${PASEO_HOME:-$(cd -- "$script_dir/.." && pwd -P)}"
-case "$paseo_home" in
-  "~") paseo_home="$HOME" ;;
-  "~/"*) paseo_home="$HOME/${paseo_home#"~/"}" ;;
-esac
-
-export COI_CONFIG="$paseo_home/coi-claude.toml"
-mkdir -p "$paseo_home/coi-claude/projects"
-
 # Paseo's version probe (`--version`) and model-discovery probe
 # (`--no-session-persistence --tools ""`) use short timeouts (<=5s) and
 # `SIGKILL` after 200ms, which can interrupt `coi run` during container
@@ -44,7 +34,8 @@ fi
 
 # Forward Paseo/Claude SDK environment variables into the container without
 # passing host CLAUDE_CONFIG_DIR (container claude uses /home/code/.claude,
-# whose projects/ dir is bind-mounted from $PASEO_HOME/coi-claude/projects).
+# whose projects/ dir is bind-mounted by the `claude` coi profile from
+# $COI_HOME/state/claude/projects).
 env_args=()
 for var in \
   CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS \
@@ -73,7 +64,7 @@ do
 done
 
 if [ "${#env_args[@]}" -gt 0 ]; then
-  exec coi run -w "$ws" -- env "${env_args[@]}" claude "$@"
+  exec coi run --profile claude -w "$ws" -- env "${env_args[@]}" claude "$@"
 else
-  exec coi run -w "$ws" -- claude "$@"
+  exec coi run --profile claude -w "$ws" -- claude "$@"
 fi

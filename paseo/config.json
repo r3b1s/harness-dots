@@ -1,14 +1,8 @@
 {
   "version": 1,
   "daemon": {
-    "listen": "10.20.30.40:6767",
     "mcp": {
       "injectIntoAgents": true
-    },
-    "cors": {
-      "allowedOrigins": [
-        "https://app.paseo.sh"
-      ]
     },
     "relay": {
       "enabled": false
@@ -61,7 +55,7 @@
           "$PASEO_HOME/bin/claude-coi"
         ],
         "env": {
-          "CLAUDE_CONFIG_DIR": "$PASEO_HOME/coi-claude"
+          "CLAUDE_CONFIG_DIR": "$COI_HOME/state/claude"
         },
         "paseoTools": {
           "enabled": false
