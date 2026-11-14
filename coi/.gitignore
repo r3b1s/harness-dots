@@ -1,6 +1,6 @@
 # coi/ holds only authored coi configuration and profiles. Runtime state
-# (sessions, storage, logs, locks, image-meta.json) stays in $COI_HOME (~/.coi);
-# install.sh copies tracked files there, never links them.
+# (sessions, storage, logs, locks, state, image-meta.json) stays in $COI_HOME
+# (~/.coi); install.sh copies tracked files there, never links them.
 
 *.bak
 .coi-*
@@ -11,4 +11,5 @@ locks/
 logs/
 sessions/
 sessions-*/
+state/
 storage/

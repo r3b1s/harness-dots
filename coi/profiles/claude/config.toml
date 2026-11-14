@@ -1,0 +1,24 @@
+# Custom coi profile for Claude Code using the `coi-default` image.
+# Persists session transcripts under $COI_HOME/state/claude/projects.
+
+[container]
+image = "coi-default"
+
+[paths]
+preserve_workspace_path = true
+
+[network]
+# Open mode avoids interactive sudo prompts for nftables when launched headless.
+mode = "open"
+
+[security]
+# Host user lacks CAP_LINUX_IMMUTABLE on /usr/local/bin/coi; rely on read-only bind mounts.
+host_immutable = false
+
+[[credentials]]
+bundle = "claude"
+
+[[mounts]]
+host = "$COI_HOME/state/claude/projects"
+container = "/home/code/.claude/projects"
+readonly = false

@@ -1,5 +1,13 @@
-# Custom coi build profile extending coi-default with Antigravity CLI (agy)
-# and Command Code CLI (command-code) managed via mise (unpinned @latest).
+# Custom coi profile for Antigravity CLI (agy) + Command Code CLI.
+# Builds the `coi-agy` image from `coi-default` and mounts isolated agent
+# state directories under $COI_HOME/state/agy/.
+
+forward_env = [
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "GOOGLE_CLOUD_PROJECT",
+  "GOOGLE_CLOUD_LOCATION",
+]
 
 [container]
 image = "coi-agy"
@@ -13,3 +21,37 @@ commands = [
   "cat /home/code/.config/mise/config.toml",
   "su - code -c '/usr/local/bin/agy --version && /usr/local/bin/cmd --version'",
 ]
+
+[paths]
+preserve_workspace_path = true
+
+[network]
+# Open mode avoids interactive sudo prompts for nftables when launched headless.
+mode = "open"
+
+[security]
+# Host user lacks CAP_LINUX_IMMUTABLE on /usr/local/bin/coi; rely on read-only bind mounts.
+host_immutable = false
+
+# Dedicated container state directories isolated from $HOME/.gemini and host keyring.
+[[mounts]]
+host = "$COI_HOME/state/agy/antigravity-cli"
+container = "/home/code/.gemini/antigravity-cli"
+readonly = false
+
+[[mounts]]
+host = "$COI_HOME/state/agy/gemini-config"
+container = "/home/code/.gemini/config"
+readonly = false
+
+# Stores OAuth tokens (plugin-secrets.json) inside the dedicated state dir when
+# signed in inside the container (fallback when desktop keyring is absent).
+[[mounts]]
+host = "$COI_HOME/state/agy/antigravity-secrets"
+container = "/home/code/.config/antigravity"
+readonly = false
+
+[[mounts]]
+host = "$COI_HOME/state/agy/cache"
+container = "/home/code/.cache/antigravity"
+readonly = false
