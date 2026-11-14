@@ -38,14 +38,15 @@ harness-dots/
 │   ├── agent/           default profile
 │   ├── profiles/<name>/agent/   named profiles (omp's native profile layout)
 │   └── bash/            _launch.bash, rc.bash, entry points (vomp)
-└── paseo/               tracked Paseo config; NOT Paseo's home (that stays ~/.paseo)
-    ├── bin/             copied into $PASEO_HOME/bin/ by paseo/install.sh (claude-coi, agy-coi)
-    ├── config.json      source for ~/.paseo/config.json (expands $PASEO_HOME/$COI_HOME/$HOME)
-    ├── install.sh       merges config.json and copies bin/* into $PASEO_HOME
-    └── gen-pi-providers.py  writes a Paseo provider per pi profile into config.json
+├── paseo/               tracked Paseo config; NOT Paseo's home (that stays ~/.paseo)
+│   ├── bin/             copied into $PASEO_HOME/bin/ by paseo/install.sh (claude-coi, agy-coi)
+│   ├── config.json      source for ~/.paseo/config.json (expands $PASEO_HOME/$COI_HOME/$HOME)
+│   ├── install.sh       merges config.json and copies bin/* into $PASEO_HOME
+│   └── gen-pi-providers.py  writes a Paseo provider per pi profile into config.json
 └── coi/                 tracked coi profiles & configs; NOT coi's home (that stays ~/.coi)
-    ├── profiles/        profile definitions (`agy`, `claude`; mounts + image builds)
-    └── install.sh       expands $COI_HOME/$HOME and copies profiles/* into $COI_HOME (~/.coi)
+    ├── bin/             copied verbatim into $COI_HOME/bin/ by coi/install.sh (coi-desktop)
+    ├── profiles/        profile definitions (`agy`, `claude`, `desktop`, `*-desktop`)
+    └── install.sh       expands $COI_HOME/$HOME in profiles/*, keeps executable bits, installs bin/* verbatim, creates state dirs
 ```
 
 ### What goes where
@@ -234,27 +235,35 @@ deployed wrappers, so `PASEO_HOME` stays at `~/.paseo` and only `paseo/config.js
 
 ### Custom `coi` providers: what `coi` owns vs what `paseo` owns
 
-Containerized Paseo providers (`claude-coi`, `agy-coi`) intentionally split sandbox configuration
-from Paseo adapter plumbing so interactive `coi` shells (`coi shell --profile <name> --debug`) and
-Paseo launches share the exact same container setup without duplicating config:
+Containerized Paseo providers (`claude-coi*`, `agy-coi*`, `commandcode-coi-desktop`) intentionally
+split sandbox configuration from Paseo adapter plumbing so interactive `coi` shells
+(`coi shell --profile <name> --debug`) and Paseo launches share the exact same container setup
+without duplicating config:
 
 | Concern | Owned by **`coi`** (`coi/` -> `$COI_HOME`, default `~/.coi`) | Owned by **`paseo`** (`paseo/` -> `$PASEO_HOME`, default `~/.paseo`) |
 |---|---|---|
-| Profiles & container builds | `coi/profiles/<name>/config.toml` (`[container]`, `[container.build]`, e.g. `coi-agy`) | — (wrappers pass `--profile <name>`) |
+| Profiles & container builds | `coi/profiles/<name>/config.toml` (`[container]`, `[container.build]`: `coi-agy`, `coi-desktop`, `coi-agy-desktop`; `desktop/build.sh` builds `coi-desktop` from `coi-default`, `agy-desktop` layers `agy` + Command Code on `coi-desktop`) | — (wrappers select `--profile` via `PASEO_COI_PROFILE`) |
+| Desktop stack & remote access | `coi/profiles/desktop/build.sh` (Xvfb `:0`, i3, AT-SPI `systemd --user` units for `code` with linger, Selkies/Pixelflux `:8080`, `computer-use-linux` MCP `/usr/local/bin/desktop-mcp`, `ppa:xtradeb/apps` Chromium wrapper launching a transient `systemd --user` unit, `/etc/desktop/AGENTS.md` copied to `/etc/claude-code/CLAUDE.md`, `~/.gemini/GEMINI.md`, and `~/.commandcode/AGENTS.md`) and `[environment]` / `[ports]` in `*-desktop` profiles (repeated instead of `inherits`, which replaces `[[mounts]]`) | — (enabled per provider via `PASEO_COI_MCP_CONFIG` or `PASEO_COI_DESKTOP_MCP`) |
+| Browser seed & takeover | Named seeds at `$COI_HOME/state/desktop/seeds/<name>/` and `COI_CONFIG` overlays at `$COI_HOME/state/desktop/overlays/<name>-ro\|rw.toml` (no profile mounts a seed; `coi-desktop run --seed NAME [--writable] -- <coi args>` attaches one per launch, `:ro` for agents and copied per container on first Chromium start, `:rw` only for `seed login`; refuses to run if `COI_CONFIG` is already set), managed by `coi/bin/coi-desktop` (`status`, `run`, `seed list\|login\|import\|profiles\|clear\|remove`, `url`) | — (providers opt in with `PASEO_COI_SEED`; wrappers only pass the seed name via `coi-desktop run`) |
 | Sandbox policy & mounts | `[paths]`, `[network]`, `[security]`, `[[credentials]]`, `forward_env`, `[[mounts]]` in `coi/profiles/` | — (no `coi-*.toml` or `COI_CONFIG` overrides in `paseo/`) |
-| Container-mounted agent state | `$COI_HOME/state/<name>/` (e.g. `~/.coi/state/claude/projects`, `~/.coi/state/agy/{antigravity-cli,gemini-config,antigravity-secrets,cache}`) | `claude-coi` reads `$COI_HOME/state/claude` via `env.CLAUDE_CONFIG_DIR` in `paseo/config.json` |
-| Provider wiring & adapter scripts | — | `paseo/config.json` (`agents.providers.{claude-coi,agy-coi}`: `command`, ACP `clientCapabilities`, `paseoTools`) and `paseo/bin/{claude-coi,agy-coi}` (`coi run --profile <name>`, host metadata fast-paths, `agy acp` proxy) |
-| Paseo-only adapter caches | — | `$PASEO_HOME/coi-agy/` (`version.txt`, `acp-init-result.json`, `probe-workspace`) |
-| Installation & portability | `coi/install.sh` expands `$COI_HOME`/`$HOME` and copies `profiles/*` | `paseo/install.sh` expands `$PASEO_HOME`/`$COI_HOME`/`$HOME`, merges `config.json`, and copies `bin/*`; `agy-coi` resolves `PASEO_HOME` at runtime |
+| Container-mounted agent state | `$COI_HOME/state/<name>/` (`claude/projects` shared by `claude` & `claude-desktop`; `agy/` shared by `agy` & `agy-desktop`; `commandcode/projects` for `commandcode-desktop`, plus host `~/.commandcode/{auth,config}.json` via `[[credentials]]`) | `claude-coi` and `claude-coi-desktop` read `$COI_HOME/state/claude` via `env.CLAUDE_CONFIG_DIR` in `paseo/config.json` |
+| Provider wiring & adapter scripts | — | `paseo/config.json` (`agents.providers.{claude-coi,agy-coi,*-desktop}`: `command`, `env` parameterization `PASEO_COI_*` including optional `PASEO_COI_SEED`/`PASEO_COI_DESKTOP_BIN`, ACP `clientCapabilities`, `paseoTools`; `commandcode-coi-desktop` extends `acp`, not the `commandcode` plugin) and `paseo/bin/{claude-coi,agy-coi}` (`coi run --profile <name>`, host/version probes without seeds, generic ACP-over-coi proxy) |
+| Paseo-only adapter caches | — | `$PASEO_HOME/coi-<profile>/` (e.g. `coi-agy/`, `coi-agy-desktop/`, `coi-commandcode-desktop/`: `version.txt`, `acp-init-result.json`, `probe-workspace`) |
+| Installation & portability | `coi/install.sh` expands `$COI_HOME`/`$HOME` in `profiles/*`, keeps executable bits, installs `bin/*` verbatim (mode 755), and creates `state/desktop/seeds` (mode 700) and `state/commandcode/projects` | `paseo/install.sh` expands `$PASEO_HOME`/`$COI_HOME`/`$HOME`, merges `config.json`, and copies `bin/*`; `agy-coi` resolves `PASEO_HOME` at runtime |
 
 Neither `paseo/install.sh` nor `coi/install.sh` checks or builds `coi` images or installs host
 binaries (`claude`, `node`, `coi`). Place container runtime configuration and mounts in `coi/profiles/`,
-never in `paseo/`, and avoid hardcoding `$HOME` or usernames anywhere.
+never in `paseo/`, and avoid hardcoding `$HOME` or usernames anywhere. Because `coi/install.sh`
+expands literal `$COI_HOME` and `$HOME` across every file in `coi/profiles/` (`build.sh` included),
+write braced `${HOME}` inside `build.sh` so the container-build variable survives installation. Keep
+`[environment]` and `[ports]` in sync across all desktop profiles when editing one.
 
 ## Rules for agents working in this repo
 
 - Never commit runtime state or credentials: `auth.json`, `sessions/`, `*.db`, `models*.json`,
   `models.yml`, `secrets.yml`, `.env`. Check `git status` before staging.
+- Never copy, print, or commit `$COI_HOME/state/desktop/seeds` contents; keep all desktop
+  image, mount, and browser configuration in `coi/profiles/` (and `coi/bin/coi-desktop`), never in `paseo/`.
 - Never point one harness at another harness's directory, and never wire a pi profile into an omp
   launcher or the reverse. Don't point either harness at `~/.pi` or `~/.omp`.
 - `install.sh`, `pi/copy-auth.sh`, `paseo/install.sh` and `coi/install.sh` write outside the files

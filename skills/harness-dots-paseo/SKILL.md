@@ -25,8 +25,8 @@ itself, use the `pi-profile` skill.
 | `paseo/bin/` | custom provider wrappers (`claude-coi`, `agy-coi` using `coi run --profile ...`), copied to `$PASEO_HOME/bin/` |
 | `paseo/install.sh` | merges `config.json` and copies `bin/*` into `$PASEO_HOME` |
 | `paseo/gen-pi-providers.py` | writes one provider per Pi entry point into `paseo/config.json` |
-| `coi/profiles/`, `coi/install.sh` | tracked `coi` profiles (`agy`, `claude`) with container builds & `$COI_HOME/state/` mounts, rendered & copied to `$COI_HOME` (`~/.coi`) |
-| `~/.paseo/` | Paseo's home (`PASEO_HOME`, set by the systemd unit `~/.config/systemd/user/paseo.service`): live `config.json`, deployed `bin/`, `coi-agy/` ACP cache (`version.txt`, `acp-init-result.json`, `probe-workspace`), runtime state, keys, logs |
+| `coi/profiles/`, `coi/bin/`, `coi/install.sh` | tracked `coi` profiles (`agy`, `claude`, `desktop`, `*-desktop`) with container builds & `$COI_HOME/state/` mounts, rendered & copied to `$COI_HOME` (`~/.coi`), plus `coi-desktop` named-seed/URL helper installed verbatim to `$COI_HOME/bin/` |
+| `~/.paseo/` | Paseo's home (`PASEO_HOME`, set by the systemd unit `~/.config/systemd/user/paseo.service`): live `config.json`, deployed `bin/`, per-profile `coi-<profile>/` ACP caches (`version.txt`, `acp-init-result.json`, `probe-workspace`), runtime state, keys, logs |
 
 **The live config is a copy, never a link, and nothing flows back automatically.** The daemon writes
 UI changes and the daemon password (`daemon.auth`, a hash) into `~/.paseo/config.json`; a symlink
@@ -43,11 +43,45 @@ need an API key do not belong in the tracked file (ask the user where it should 
 `coi/profiles/`) so tracked paths stay portable; keep the wrappers in `paseo/bin/` free of
 hardcoded usernames by resolving `PASEO_HOME` at runtime.
 
-For `agy-coi`, `paseo/bin/agy-coi` self-populates `$PASEO_HOME/coi-agy/version.txt` on a `--version`
-cache miss and `$PASEO_HOME/coi-agy/acp-init-result.json` on ACP `initialize`, and invokes
-`coi run --profile agy`. It expects `coi`, `node`, the `agy` profile (`~/.coi/profiles/agy/config.toml`),
-and the built `coi-agy` image to already exist on the host. Neither `paseo/install.sh` nor
-`coi/install.sh` checks or builds container images or host binaries.
+## Containerized (`coi`) providers
+
+`paseo/bin/claude-coi` and `paseo/bin/agy-coi` are parameterized via provider `env`, so the desktop
+variants reuse the same two wrappers without adding files to `paseo/bin/`:
+
+| Provider | Extends | Wrapper | `coi` profile | Provider `env` |
+|---|---|---|---|---|
+| `claude-coi` | `claude` | `claude-coi` | `claude` | `CLAUDE_CONFIG_DIR=$COI_HOME/state/claude` |
+| `agy-coi` | `acp` | `agy-coi` | `agy` | — (defaults: `agy acp`, cache `$PASEO_HOME/coi-agy/`) |
+| `claude-coi-desktop` | `claude` | `claude-coi` | `claude-desktop` | `CLAUDE_CONFIG_DIR=$COI_HOME/state/claude`, `PASEO_COI_PROFILE=claude-desktop`, `PASEO_COI_MCP_CONFIG=/etc/desktop/claude-mcp.json` |
+| `agy-coi-desktop` | `acp` | `agy-coi` | `agy-desktop` | `PASEO_COI_PROFILE=agy-desktop`, `PASEO_COI_DESKTOP_MCP=1` |
+| `commandcode-coi-desktop` | `acp` | `agy-coi` | `commandcode-desktop` | `PASEO_COI_PROFILE=commandcode-desktop`, `PASEO_COI_ACP_ARGV=["cmd","acp"]`, `PASEO_COI_FORWARD_ENV=""`, `PASEO_COI_STRIP_THOUGHT_LEVEL="0"` |
+
+- `claude-coi` reads `PASEO_COI_PROFILE` (default `claude`), `PASEO_COI_MCP_CONFIG` (passed to
+  in-container `claude` via `--mcp-config`), `PASEO_COI_SEED` (named browser seed; default empty =
+  none), and `PASEO_COI_DESKTOP_BIN` (default `${COI_HOME:-$HOME/.coi}/bin/coi-desktop`).
+- `agy-coi` is a generic ACP-over-coi proxy reading `PASEO_COI_PROFILE` (default `agy`; selects cache
+  dir `$PASEO_HOME/coi-<profile>/` for `version.txt`, `acp-init-result.json`, and `probe-workspace`),
+  `PASEO_COI_ACP_ARGV` (JSON non-empty string array; default
+  `["agy","acp","--dangerously-skip-permissions","--disable-telemetry"]`), `PASEO_COI_FORWARD_ENV`
+  (comma-separated env vars; unset forwards the default Gemini/Google list, `""` forwards none),
+  `PASEO_COI_STRIP_THOUGHT_LEVEL` (`"0"` disables stripping `thought_level` config options),
+  `PASEO_COI_DESKTOP_MCP` (`"1"` adds the `desktop` stdio MCP server to ACP `session/new`,
+  `session/load`, and `session/resume` requests), `PASEO_COI_SEED` (named browser seed; default
+  empty = none), and `PASEO_COI_DESKTOP_BIN` (default `${COI_HOME:-$HOME/.coi}/bin/coi-desktop`).
+- Browser seeds are owned by `coi/` (seeds, `COI_CONFIG` overlays, and `coi-desktop`); the Paseo
+  wrappers only pass the seed name. No seed is set in tracked `paseo/config.json`. When
+  `PASEO_COI_SEED` is set, the wrapper launches the session via `coi-desktop run --seed <name> --`
+  (metadata/version probes never attach a seed). To give different agents different logins, add a
+  provider entry per seed (e.g. copy `claude-coi-desktop` to `claude-coi-desktop-github` with
+  `"PASEO_COI_SEED": "github"`).
+- `commandcode-coi-desktop` extends `acp` rather than Paseo's `commandcode` plugin provider because
+  that plugin launches one daemon-wide binary, so it lacks the plugin's extra slash commands; the
+  `coi-agy-desktop` image pre-registers `desktop` in `~/.commandcode/mcp.json`.
+
+All `coi` providers expect `coi`, `node` (for `agy-coi`), the target profile in `~/.coi/profiles/`,
+and the built container images (`coi-agy`, `coi-desktop`, `coi-agy-desktop`) to already exist on the
+host. Neither `paseo/install.sh` nor `coi/install.sh` checks or builds container images or host
+binaries.
 
 ## Pi profiles as Paseo providers
 
