@@ -1,0 +1,767 @@
+#!/usr/bin/env python3
+"""Manage named coi-desktop Chromium seeds and active desktop URLs."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import sqlite3
+import stat
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+PBKDF2_SALT = b"saltysalt"
+AES_IV = b" " * 16
+DEFAULT_USER_DATA_DIR = "~/.config/chromium"
+SEED_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
+CONTAINER_SEED_PATH = "/opt/desktop/chromium-seed"
+
+
+def die(msg: str) -> None:
+    print(f"error: {msg}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def coi_home() -> Path:
+    return Path(os.path.expanduser(os.environ.get("COI_HOME") or "~/.coi"))
+
+
+def desktop_state_dir() -> Path:
+    return coi_home() / "state" / "desktop"
+
+
+def seeds_dir() -> Path:
+    return desktop_state_dir() / "seeds"
+
+
+def seed_dir(name: str) -> Path:
+    return seeds_dir() / name
+
+
+def overlays_dir() -> Path:
+    return desktop_state_dir() / "overlays"
+
+
+def overlay_paths(name: str) -> tuple[Path, Path]:
+    d = overlays_dir()
+    return d / f"{name}-ro.toml", d / f"{name}-rw.toml"
+
+
+def validate_seed_name(name: str) -> str:
+    if not SEED_NAME_RE.fullmatch(name):
+        die(
+            f"invalid seed name '{name}': must match ^[a-z0-9][a-z0-9_-]{{0,31}}$ "
+            "(1-32 lowercase letters, digits, '_' or '-', starting with a letter or digit)."
+        )
+    return name
+
+
+def toml_escape(value: str) -> str:
+    out: list[str] = []
+    for ch in value:
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch == '"':
+            out.append('\\"')
+        elif ch == "\b":
+            out.append("\\b")
+        elif ch == "\t":
+            out.append("\\t")
+        elif ch == "\n":
+            out.append("\\n")
+        elif ch == "\f":
+            out.append("\\f")
+        elif ch == "\r":
+            out.append("\\r")
+        elif ord(ch) < 0x20 or ord(ch) == 0x7F:
+            out.append(f"\\u{ord(ch):04x}")
+        else:
+            out.append(ch)
+    return '"' + "".join(out) + '"'
+
+
+def ensure_overlay(name: str, seed: Path, writable: bool) -> Path:
+    d = overlays_dir()
+    ensure_dir(d, 0o700)
+    suffix = "rw" if writable else "ro"
+    overlay = d / f"{name}-{suffix}.toml"
+    host_abs = os.path.abspath(seed)
+    ro_val = "false" if writable else "true"
+    content = (
+        "[[mounts]]\n"
+        f"host = {toml_escape(host_abs)}\n"
+        f'container = "{CONTAINER_SEED_PATH}"\n'
+        f"readonly = {ro_val}\n"
+    )
+    if not overlay.is_symlink() and overlay.is_file():
+        try:
+            if overlay.read_text(encoding="utf-8") == content:
+                if stat.S_IMODE(overlay.stat().st_mode) != 0o600:
+                    os.chmod(overlay, 0o600)
+                return overlay
+        except OSError:
+            pass
+    fd, tmp_str = tempfile.mkstemp(dir=d, prefix=f".{name}-{suffix}.tmp.")
+    tmp_path = Path(tmp_str)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, overlay)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    return overlay
+
+
+def launch_with_seed(name: str, writable: bool, coi_args: list[str]) -> None:
+    validate_seed_name(name)
+    if not coi_args:
+        die("missing coi arguments after '--'.")
+    if os.environ.get("COI_CONFIG"):
+        die("COI_CONFIG is already set (cannot chain seed overlays).")
+    if not shutil.which("coi"):
+        die("'coi' not found on PATH.")
+    seed = seed_dir(name)
+    if writable:
+        if seed.is_symlink() or (seed.exists() and not seed.is_dir()):
+            die(f"seed path is not a directory: {seed}")
+        ensure_dir(seeds_dir(), 0o700)
+        ensure_dir(seed, 0o700)
+    elif not seed.is_dir():
+        die(
+            f"seed '{name}' does not exist; create it with "
+            f"'coi-desktop seed login {name}' or 'seed import {name}'"
+        )
+    overlay = ensure_overlay(name, seed, writable=writable)
+    env = os.environ.copy()
+    env["COI_CONFIG"] = os.path.abspath(overlay)
+    try:
+        os.execvpe("coi", ["coi", *coi_args], env)
+    except OSError as exc:
+        die(f"failed to exec coi: {exc}")
+
+
+def ensure_dir(path: Path, mode: int | None = None) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    if mode is not None:
+        os.chmod(path, mode)
+
+
+def fmt_size(num_bytes: int) -> str:
+    size = float(num_bytes)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if size < 1024.0 or unit == "GiB":
+            return f"{int(size)} B" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024.0
+    return f"{num_bytes} B"
+
+
+def dir_size(path: Path) -> int:
+    if not path.is_dir():
+        return 0
+    total = 0
+    for root, _dirs, files in os.walk(path, followlinks=False):
+        for name in files:
+            p = os.path.join(root, name)
+            try:
+                if not os.path.islink(p):
+                    total += os.lstat(p).st_size
+            except OSError:
+                pass
+    return total
+
+
+def find_cookies_file(profile_dir: Path) -> Path | None:
+    for rel in (Path("Cookies"), Path("Network") / "Cookies"):
+        if (p := profile_dir / rel).is_file():
+            return p
+    return None
+
+
+def read_cookie_stats(cookies_path: Path) -> tuple[int, int] | None:
+    if not cookies_path.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{cookies_path}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*), COUNT(DISTINCT LOWER(LTRIM(host_key, '.'))) FROM cookies"
+            ).fetchone()
+            return (int(row[0]), int(row[1])) if row else (0, 0)
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+
+
+def lookup_keyring_secret(app: str) -> bytes:
+    """Look up Chromium's v11 keyring secret via secret-tool."""
+    try:
+        res = subprocess.run(["secret-tool", "lookup", "application", app], capture_output=True, check=False)
+    except FileNotFoundError:
+        die("secret-tool not found; install libsecret to decrypt v11 cookies.")
+    except OSError as exc:
+        die(f"failed to run secret-tool: {exc}")
+    if res.returncode != 0:
+        detail = res.stderr.decode("utf-8", "replace").strip()
+        hint = f" ({detail})" if detail else ""
+        die(f"keyring lookup failed for application '{app}'{hint}. Wrong keyring entry? Try --keyring-app chrome.")
+    secret = res.stdout[:-1] if res.stdout.endswith(b"\n") else res.stdout
+    if not secret:
+        die(f"keyring returned an empty secret for application '{app}'. Wrong keyring entry? Try --keyring-app chrome.")
+    return secret
+
+
+def _load_crypto():
+    try:
+        from cryptography.hazmat.primitives import padding
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    except ImportError:
+        die("the 'cryptography' package is required for 'seed import' (install python-cryptography or cryptography).")
+    return Cipher, algorithms, modes, padding
+
+
+def derive_key(password: bytes) -> bytes:
+    return hashlib.pbkdf2_hmac("sha1", password, PBKDF2_SALT, 1, 16)
+
+
+def aes_cbc_decrypt(key: bytes, ciphertext: bytes, crypto) -> bytes:
+    Cipher, algorithms, modes, padding = crypto
+    if not ciphertext or len(ciphertext) % 16 != 0:
+        raise ValueError("invalid ciphertext length")
+    padded = (Cipher(algorithms.AES(key), modes.CBC(AES_IV)).decryptor())
+    data = padded.update(ciphertext) + padded.finalize()
+    unpadder = padding.PKCS7(128).unpadder()
+    return unpadder.update(data) + unpadder.finalize()
+
+
+def aes_cbc_encrypt(key: bytes, plaintext: bytes, crypto) -> bytes:
+    Cipher, algorithms, modes, padding = crypto
+    padder = padding.PKCS7(128).padder()
+    padded = padder.update(plaintext) + padder.finalize()
+    enc = Cipher(algorithms.AES(key), modes.CBC(AES_IV)).encryptor()
+    return enc.update(padded) + enc.finalize()
+
+
+def discover_profiles(user_data_dir: Path) -> list[tuple[str, str, Path | None]]:
+    if not user_data_dir.is_dir():
+        die(f"Chromium user data dir not found: {user_data_dir}")
+    info_cache: dict = {}
+    local_state = user_data_dir / "Local State"
+    if local_state.is_file():
+        try:
+            raw = json.loads(local_state.read_text(encoding="utf-8", errors="replace"))
+            if isinstance(c := raw.get("profile", {}).get("info_cache"), dict):
+                info_cache = c
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    names = {k for k in info_cache if (user_data_dir / k).is_dir()}
+    for entry in user_data_dir.iterdir():
+        if entry.is_dir() and (
+            entry.name == "Default" or entry.name.startswith("Profile ") or find_cookies_file(entry)
+        ):
+            names.add(entry.name)
+
+    ordered = sorted(names, key=lambda n: (0 if n == "Default" else 1, n.lower()))
+    out = []
+    for name in ordered:
+        meta = info_cache.get(name, {})
+        display = str(meta.get("name", "") or "") if isinstance(meta, dict) else ""
+        out.append((name, display, find_cookies_file(user_data_dir / name)))
+    return out
+
+
+def parse_listen_url(listen: str) -> str:
+    addr = listen[4:] if listen.startswith("tcp:") else listen
+    host, sep, port = addr.rpartition(":")
+    if not sep or not port:
+        return listen
+    return f"http://{'127.0.0.1' if not host or host == '0.0.0.0' else host}:{port}/"
+
+
+def read_selkies_creds(name: str) -> tuple[str, str, str | None]:
+    res = subprocess.run(
+        ["incus", "exec", name, "--user", "1000", "--", "cat", "/run/user/1000/pixelflux-cu.env"],
+        capture_output=True, text=True, check=False,
+    )
+    if res.returncode != 0:
+        err = (res.stderr or res.stdout).strip().splitlines()
+        return "", "", err[0] if err else f"incus exec exited {res.returncode}"
+    env = {}
+    for line in res.stdout.splitlines():
+        if "=" in line and not line.lstrip().startswith("#"):
+            k, v = line.split("=", 1)
+            env[k.strip()] = v.strip()
+    return env.get("SELKIES_BASIC_AUTH_USER", ""), env.get("SELKIES_BASIC_AUTH_PASSWORD", ""), None
+
+
+def get_running_desktops(container: str | None = None) -> tuple[list[dict[str, str]], str | None]:
+    try:
+        res = subprocess.run(["incus", "list", "--format", "json"], capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        return [], "incus not found on PATH"
+    except OSError as exc:
+        return [], f"failed to run incus: {exc}"
+    if res.returncode != 0:
+        err = (res.stderr or res.stdout).strip().splitlines()
+        return [], err[0] if err else f"incus list exited {res.returncode}"
+    try:
+        instances = json.loads(res.stdout)
+    except json.JSONDecodeError as exc:
+        return [], f"incus list returned invalid JSON: {exc}"
+
+    results = []
+    for inst in instances:
+        name = inst.get("name", "")
+        if inst.get("status") != "Running" or (container and name != container):
+            continue
+        for dev in (inst.get("expanded_devices") or {}).values():
+            if isinstance(dev, dict) and dev.get("type") == "proxy" and str(dev.get("connect", "")).endswith(":8080"):
+                user, pw, cred_err = read_selkies_creds(name)
+                results.append({
+                    "name": name, "url": parse_listen_url(str(dev.get("listen", ""))),
+                    "user": user, "password": pw, "cred_err": cred_err or "",
+                })
+    return results, None
+
+
+def print_desktops(entries: list[dict[str, str]]) -> None:
+    for item in entries:
+        print(f"  {item['name']}\n    URL:      {item['url']}")
+        if item["cred_err"]:
+            print(f"    Auth:     unavailable ({item['cred_err']})")
+        else:
+            print(f"    Username: {item['user']}\n    Password: {item['password']}")
+
+
+def list_seeds() -> list[tuple[str, Path, int, tuple[int, int] | None]]:
+    root = seeds_dir()
+    if not root.is_dir():
+        return []
+    entries: list[tuple[str, Path, int, tuple[int, int] | None]] = []
+    for entry in sorted(root.iterdir(), key=lambda p: p.name):
+        if entry.name.startswith(".") or not entry.is_dir():
+            continue
+        cookies = find_cookies_file(entry / "Default")
+        stats = read_cookie_stats(cookies) if cookies else None
+        entries.append((entry.name, entry, dir_size(entry), stats))
+    return entries
+
+
+def format_seed_line(name: str, size_bytes: int, stats: tuple[int, int] | None, width: int) -> str:
+    size_str = fmt_size(size_bytes)
+    if stats is None:
+        cookie_str = "no cookies"
+    else:
+        cnt, dom = stats
+        cookie_str = f"{cnt} {'cookie' if cnt == 1 else 'cookies'} across {dom} {'domain' if dom == 1 else 'domains'}"
+    return f"  {name:<{width}}  {size_str:>9}  {cookie_str}"
+
+
+def cmd_status(_args: argparse.Namespace) -> None:
+    seeds = list_seeds()
+    print(f"Seeds ({seeds_dir()}):")
+    if not seeds:
+        print("  none")
+    else:
+        width = max(len(name) for name, _, _, _ in seeds)
+        for name, _path, size_bytes, stats in seeds:
+            print(format_seed_line(name, size_bytes, stats, width))
+
+    legacy = desktop_state_dir() / "chromium-seed"
+    if legacy.is_dir() and any(legacy.iterdir()):
+        print(f"\nLegacy seed at {legacy} is non-empty; migrate with: mv {legacy} {seeds_dir()}/<name>")
+
+    print("\nRunning desktops:")
+    entries, err = get_running_desktops()
+    if err:
+        print(f"  unavailable ({err})")
+    elif not entries:
+        print("  none")
+    else:
+        print_desktops(entries)
+
+    if not seeds:
+        print(
+            "\nNo seeds yet. Setup guide:\n"
+            "  1. Create a seed:\n"
+            "       coi-desktop seed login NAME [URL...]   (recommended: same Chromium build, no version/encryption mismatch)\n"
+            "       coi-desktop seed import NAME           (copies & re-encrypts cookies from a host Chromium profile)\n"
+            "  2. Launch with a seed:\n"
+            "       coi-desktop run --seed NAME -- shell --profile claude-desktop\n"
+            '     Or set "PASEO_COI_SEED": "NAME" in a Paseo provider\'s env.\n'
+            "\nNote:\n"
+            "  - A seed is readable by every session started with it; keep one seed per purpose.\n"
+            "    Seeds live in COI_HOME/state, outside the repo and never tracked by git.\n"
+            "  - Running containers keep the copy they made."
+        )
+
+
+def cmd_seed_list(_args: argparse.Namespace) -> None:
+    seeds = list_seeds()
+    if not seeds:
+        print(f"No seeds found in {seeds_dir()}.")
+        print("Create one with:")
+        print("  coi-desktop seed login NAME [URL...]   (recommended: interactive browser in container)")
+        print("  coi-desktop seed import NAME           (copy & re-encrypt cookies from a host Chromium profile)")
+        return
+    width = max(len(name) for name, _, _, _ in seeds)
+    for name, _path, size_bytes, stats in seeds:
+        print(format_seed_line(name, size_bytes, stats, width))
+
+
+def cmd_run(args: argparse.Namespace) -> None:
+    launch_with_seed(args.seed, writable=args.writable, coi_args=args.coi_args)
+
+
+def cmd_seed_profiles(args: argparse.Namespace) -> None:
+    user_data_dir = Path(os.path.expanduser(args.user_data_dir))
+    profiles = discover_profiles(user_data_dir)
+    if not profiles:
+        print(f"No Chromium profiles found in {user_data_dir}")
+        return
+    print(f"Profiles in {user_data_dir}:")
+    for dir_name, display, cookies in profiles:
+        label = f" ({display})" if display and display != dir_name else ""
+        print(f"  {dir_name}{label}  [cookies: {'yes' if cookies else 'no'}]")
+
+
+def resolve_profile(user_data_dir: Path, selector: str) -> tuple[str, str, Path]:
+    profiles = discover_profiles(user_data_dir)
+    matches = [p for p in profiles if p[0] == selector]
+    if not matches:
+        matches = [p for p in profiles if p[1].lower() == selector.lower()]
+    if not matches:
+        avail = ", ".join(f"{d} ({n})" if n and n != d else d for d, n, _ in profiles) or "none"
+        die(f"profile '{selector}' not found in {user_data_dir} (available: {avail})")
+    if len(matches) > 1:
+        die(f"profile '{selector}' matched multiple dirs ({', '.join(m[0] for m in matches)}); use directory name.")
+    dir_name, display, cookies = matches[0]
+    if cookies is None:
+        die(f"profile '{dir_name}' has no Cookies database in {user_data_dir / dir_name}")
+    return dir_name, display, cookies
+
+
+def domain_matches(host_key: str, allowed: list[str]) -> bool:
+    host = host_key.lstrip(".").lower()
+    return bool(host) and any(host == d or host.endswith(f".{d}") for d in allowed)
+
+
+def _process_cookies_db(
+    work_db: Path, domains: list[str], keyring_app: str, crypto
+) -> tuple[int, int, int, int, int, int, int]:
+    conn = sqlite3.connect(work_db)
+    try:
+        meta_version = 0
+        try:
+            row = conn.execute("SELECT value FROM meta WHERE key = 'version'").fetchone()
+            if row and row[0] is not None:
+                meta_version = int(row[0])
+        except sqlite3.Error:
+            pass
+
+        if domains:
+            gone = [(rid,) for rid, hk in conn.execute("SELECT rowid, host_key FROM cookies") if not domain_matches(hk or "", domains)]
+            if gone:
+                conn.executemany("DELETE FROM cookies WHERE rowid = ?", gone)
+
+        rows = conn.execute("SELECT rowid, host_key, encrypted_value FROM cookies").fetchall()
+        v11_rows: list[tuple[int, str, bytes]] = []
+        v10_kept = empty_kept = unsupported = 0
+        distinct_domains: set[str] = set()
+
+        for rid, hk, raw_ev in rows:
+            host = hk or ""
+            if norm := host.lstrip(".").lower():
+                distinct_domains.add(norm)
+            if raw_ev is None or raw_ev == b"" or raw_ev == "":
+                empty_kept += 1
+                continue
+            ev = bytes(raw_ev) if isinstance(raw_ev, (bytes, bytearray, memoryview)) else raw_ev.encode("utf-8")
+            if ev.startswith(b"v11"):
+                v11_rows.append((rid, host, ev))
+            elif ev.startswith(b"v10"):
+                v10_kept += 1
+            else:
+                unsupported += 1
+
+        v11_ok = v11_failed = 0
+        if v11_rows:
+            keyring_key = derive_key(lookup_keyring_secret(keyring_app))
+            peanuts_key = derive_key(b"peanuts")
+            updates: list[tuple[bytes, int]] = []
+            for rid, host, ev in v11_rows:
+                try:
+                    pt = aes_cbc_decrypt(keyring_key, ev[3:], crypto)
+                    if meta_version >= 24:
+                        digest = hashlib.sha256(host.encode("utf-8")).digest()
+                        if len(pt) < 32 or pt[:32] != digest:
+                            raise ValueError("host_key hash mismatch")
+                    updates.append((b"v10" + aes_cbc_encrypt(peanuts_key, pt, crypto), rid))
+                    v11_ok += 1
+                except ValueError:
+                    v11_failed += 1
+            if v11_failed == len(v11_rows):
+                die(
+                    f"failed to decrypt all {v11_failed} v11 cookie(s) "
+                    "(wrong keyring entry? try --keyring-app chrome). Seed was not modified."
+                )
+            if updates:
+                conn.executemany("UPDATE cookies SET encrypted_value = ? WHERE rowid = ?", updates)
+
+        conn.commit()
+        conn.execute("VACUUM")
+        return len(rows), len(distinct_domains), v11_ok, v10_kept, empty_kept, v11_failed, unsupported
+    except sqlite3.Error as exc:
+        die(f"failed to process Cookies database: {exc}")
+    finally:
+        conn.close()
+
+
+def cmd_seed_import(args: argparse.Namespace) -> None:
+    name = validate_seed_name(args.name)
+    crypto = _load_crypto()
+    user_data_dir = Path(os.path.expanduser(args.user_data_dir))
+    dir_name, display_name, cookies_src = resolve_profile(user_data_dir, args.profile)
+
+    domains: list[str] = []
+    if args.domains is not None:
+        domains = [d.strip().lstrip(".").lower() for d in args.domains.split(",") if d.strip()]
+        if not domains:
+            die("--domains requires at least one domain.")
+
+    if os.path.lexists(user_data_dir / "SingletonLock"):
+        print(f"warning: {user_data_dir / 'SingletonLock'} exists (browser may be running; recent cookies may be missing)", file=sys.stderr)
+
+    with tempfile.TemporaryDirectory(prefix="coi-desktop-") as tmp_str:
+        tmpdir = Path(tmp_str)
+        os.chmod(tmpdir, 0o700)
+        work_db = tmpdir / "Cookies"
+        shutil.copyfile(cookies_src, work_db)
+        os.chmod(work_db, 0o600)
+        for suffix in ("-journal", "-wal", "-shm"):
+            if (side := cookies_src.parent / (cookies_src.name + suffix)).is_file():
+                side_dst = tmpdir / ("Cookies" + suffix)
+                shutil.copyfile(side, side_dst)
+                os.chmod(side_dst, 0o600)
+
+        total, domain_cnt, v11_ok, v10_kept, empty_kept, v11_failed, unsupported = _process_cookies_db(
+            work_db, domains, args.keyring_app, crypto
+        )
+
+        ensure_dir(seeds_dir(), 0o700)
+        seed = seed_dir(name)
+        ensure_dir(seed, 0o700)
+        seed_default = seed / "Default"
+        ensure_dir(seed_default, 0o700)
+        fd, tmp_dest_str = tempfile.mkstemp(dir=seed_default, prefix=".Cookies.tmp.")
+        tmp_dest = Path(tmp_dest_str)
+        try:
+            with os.fdopen(fd, "wb") as dst_f, work_db.open("rb") as src_f:
+                shutil.copyfileobj(src_f, dst_f)
+            os.chmod(tmp_dest, 0o600)
+            os.replace(tmp_dest, seed_default / "Cookies")
+        except Exception:
+            tmp_dest.unlink(missing_ok=True)
+            raise
+        for suffix in ("-journal", "-wal", "-shm"):
+            (seed_default / f"Cookies{suffix}").unlink(missing_ok=True)
+
+        if args.with_storage:
+            print("warning: Local Storage and IndexedDB are copied whole and NOT filtered by --domains", file=sys.stderr)
+            src_profile_dir = user_data_dir / dir_name
+            for folder in ("Local Storage", "IndexedDB"):
+                dst_folder = seed_default / folder
+                if dst_folder.is_symlink() or dst_folder.is_file():
+                    dst_folder.unlink()
+                elif dst_folder.is_dir():
+                    shutil.rmtree(dst_folder)
+                if (src_folder := src_profile_dir / folder).is_dir():
+                    shutil.copytree(src_folder, dst_folder, ignore=shutil.ignore_patterns("LOCK", "Singleton*"))
+
+    last_ver_file = user_data_dir / "Last Version"
+    last_ver = last_ver_file.read_text(encoding="utf-8", errors="replace").strip() if last_ver_file.is_file() else "unknown"
+    prof_label = f"{dir_name} ({display_name})" if display_name and display_name != dir_name else dir_name
+    skipped = v11_failed + unsupported
+    print(f"Seed:            {name} ({seed})")
+    print(f"Source profile:  {prof_label}")
+    print(
+        f"Cookies:         {total} imported ({v11_ok} re-encrypted v11->v10, {v10_kept} v10, "
+        f"{empty_kept} unencrypted, {skipped} skipped [{v11_failed} failed, {unsupported} unsupported])"
+    )
+    print(f"Domains:         {domain_cnt}")
+    print(f"Source version:  {last_ver}")
+    print(f"Note: if the container's Chromium is older than the source version and sessions do not show up, use 'coi-desktop seed login {name}' instead.")
+
+
+def cmd_seed_login(args: argparse.Namespace) -> None:
+    name = validate_seed_name(args.name)
+    if os.environ.get("COI_CONFIG"):
+        die("COI_CONFIG is already set (cannot chain seed overlays).")
+    if not shutil.which("coi"):
+        die("'coi' not found on PATH.")
+    workspace = desktop_state_dir() / "login-workspace"
+    ensure_dir(workspace)
+    print(f"Launching desktop container for writable seed '{name}' ({seed_dir(name)})...", file=sys.stderr)
+    sys.stderr.flush()
+    launch_with_seed(
+        name,
+        writable=True,
+        coi_args=["run", "--profile", "desktop", "-w", str(workspace), "--", "desktop-login-session", *args.urls],
+    )
+
+
+def _confirm(prompt_text: str) -> None:
+    try:
+        ans = input(prompt_text).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        die("aborted.")
+    if ans not in ("y", "yes"):
+        die("aborted.")
+
+
+def cmd_seed_clear(args: argparse.Namespace) -> None:
+    name = validate_seed_name(args.name)
+    seed = seed_dir(name)
+    if not seed.is_dir():
+        die(f"seed '{name}' does not exist.")
+    if not any(seed.iterdir()):
+        print(f"Seed '{name}' is already empty ({seed}).")
+        return
+    if not args.yes:
+        _confirm(f"Delete all contents of seed '{name}' ({seed})? [y/N] ")
+    for entry in seed.iterdir():
+        entry.unlink() if entry.is_symlink() or not entry.is_dir() else shutil.rmtree(entry)
+    print(f"Cleared seed '{name}' ({seed})")
+
+
+def cmd_seed_remove(args: argparse.Namespace) -> None:
+    name = validate_seed_name(args.name)
+    seed = seed_dir(name)
+    ro_overlay, rw_overlay = overlay_paths(name)
+    has_seed = seed.exists() or seed.is_symlink()
+    has_overlays = ro_overlay.exists() or ro_overlay.is_symlink() or rw_overlay.exists() or rw_overlay.is_symlink()
+    if not has_seed and not has_overlays:
+        die(f"seed '{name}' does not exist.")
+    if not args.yes:
+        _confirm(f"Delete seed '{name}' ({seed}) and its overlays? [y/N] ")
+    if seed.is_symlink() or (seed.exists() and not seed.is_dir()):
+        seed.unlink()
+    elif seed.is_dir():
+        shutil.rmtree(seed)
+    ro_overlay.unlink(missing_ok=True)
+    rw_overlay.unlink(missing_ok=True)
+    print(f"Removed seed '{name}'")
+
+
+def cmd_url(args: argparse.Namespace) -> None:
+    entries, err = get_running_desktops(args.container)
+    if err:
+        die(err)
+    if not entries:
+        print(f"No running desktop found for container '{args.container}'." if args.container else "No running desktops.")
+        return
+    print_desktops(entries)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    epilog = (
+        "examples:\n"
+        "  coi-desktop\n"
+        "  coi-desktop seed list\n"
+        "  coi-desktop seed profiles\n"
+        "  coi-desktop seed login work https://github.com/login\n"
+        "  coi-desktop seed import work --domains github.com,google.com\n"
+        "  coi-desktop run --seed work -- shell --profile claude-desktop\n"
+        "  coi-desktop url"
+    )
+    parser = argparse.ArgumentParser(
+        prog="coi-desktop",
+        description="Manage named coi-desktop Chromium seeds and active desktop URLs.",
+        epilog=epilog,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = parser.add_subparsers(dest="cmd")
+    sub.add_parser("status", help="show seeds and running desktops (default)").set_defaults(func=cmd_status)
+
+    run_p = sub.add_parser(
+        "run",
+        usage="%(prog)s --seed NAME [--writable] -- COI_ARGS...",
+        help="launch coi with a named Chromium seed overlay attached",
+    )
+    run_p.add_argument("--seed", required=True, metavar="NAME", help="named seed to attach")
+    run_p.add_argument("--writable", action="store_true", help="mount seed read-write (creates seed if missing)")
+    run_p.add_argument("coi_args", nargs=argparse.REMAINDER, metavar="COI_ARGS", help="arguments passed verbatim to coi after '--'")
+    run_p.set_defaults(func=cmd_run)
+
+    seed_p = sub.add_parser("seed", help="inspect or populate named Chromium seeds")
+    seed_sub = seed_p.add_subparsers(dest="seed_cmd")
+    seed_p.set_defaults(func=lambda _a: seed_p.print_help())
+
+    seed_sub.add_parser("list", help="list available seeds").set_defaults(func=cmd_seed_list)
+
+    prof_p = seed_sub.add_parser("profiles", help="list host Chromium profiles")
+    prof_p.add_argument("--user-data-dir", default=DEFAULT_USER_DATA_DIR, help="Chromium user data dir")
+    prof_p.set_defaults(func=cmd_seed_profiles)
+
+    imp_p = seed_sub.add_parser("import", help="import and re-encrypt cookies from a host Chromium profile into a seed")
+    imp_p.add_argument("name", metavar="NAME", help="target seed name")
+    imp_p.add_argument("--user-data-dir", default=DEFAULT_USER_DATA_DIR, help="Chromium user data dir")
+    imp_p.add_argument("--profile", default="Default", help="profile directory or display name (default: Default)")
+    imp_p.add_argument("--domains", help="comma-separated domains to keep (others are deleted)")
+    imp_p.add_argument("--with-storage", action="store_true", help="also copy Local Storage and IndexedDB")
+    imp_p.add_argument("--keyring-app", default="chromium", help="secret-tool application attribute (default: chromium)")
+    imp_p.set_defaults(func=cmd_seed_import)
+
+    login_p = seed_sub.add_parser("login", help="launch desktop container with writable seed to log in interactively")
+    login_p.add_argument("name", metavar="NAME", help="target seed name (created if missing)")
+    login_p.add_argument("urls", nargs="*", metavar="URL", help="initial URL(s) to open")
+    login_p.set_defaults(func=cmd_seed_login)
+
+    clr_p = seed_sub.add_parser("clear", help="delete contents of a seed directory (keep the directory)")
+    clr_p.add_argument("name", metavar="NAME", help="seed name")
+    clr_p.add_argument("--yes", action="store_true", help="skip confirmation prompt")
+    clr_p.set_defaults(func=cmd_seed_clear)
+
+    rm_p = seed_sub.add_parser("remove", help="delete a seed directory and its overlay files")
+    rm_p.add_argument("name", metavar="NAME", help="seed name")
+    rm_p.add_argument("--yes", action="store_true", help="skip confirmation prompt")
+    rm_p.set_defaults(func=cmd_seed_remove)
+
+    url_p = sub.add_parser("url", help="show Selkies URL and credentials for running desktop containers")
+    url_p.add_argument("container", nargs="?", metavar="CONTAINER", help="filter by container name")
+    url_p.set_defaults(func=cmd_url)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    parser = build_parser()
+    if raw_argv and raw_argv[0] == "run":
+        rest = raw_argv[1:]
+        if "--" in rest:
+            sep = rest.index("--")
+            args = parser.parse_args(["run", *rest[:sep]])
+            args.coi_args = rest[sep + 1 :]
+        else:
+            parser.parse_args(raw_argv)
+            die("missing '--' before coi arguments (usage: coi-desktop run --seed NAME [--writable] -- COI_ARGS...)")
+        args.func(args)
+        return 0
+
+    args = parser.parse_args(raw_argv)
+    cmd_status(args) if args.cmd is None else args.func(args)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

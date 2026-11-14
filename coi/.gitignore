@@ -4,6 +4,8 @@
 
 *.bak
 .coi-*
+__pycache__/
+*.pyc
 
 # Runtime state if --home is ever pointed here
 image-meta.json
