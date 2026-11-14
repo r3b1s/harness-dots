@@ -1,11 +1,78 @@
 #!/usr/bin/env node
 "use strict";
 
+/**
+ * Generic ACP agent proxy over `coi`, defaulting to Antigravity (`agy`) behaviour.
+ * Lazily starts `coi run --profile <profile> ...` once the session cwd is known.
+ *
+ * Environment variables (all optional):
+ *   PASEO_COI_PROFILE            coi profile name (default: "agy"; cache dir is $PASEO_HOME/coi-<profile>)
+ *   PASEO_COI_ACP_ARGV           JSON non-empty string array for the in-container agent command
+ *                                (default: ["agy","acp","--dangerously-skip-permissions","--disable-telemetry"])
+ *   PASEO_COI_FORWARD_ENV        comma-separated host env var names to forward; unset uses the default
+ *                                Gemini list, empty string forwards nothing
+ *   PASEO_COI_STRIP_THOUGHT_LEVEL  "0" disables stripping `thought_level` config options (default: enabled)
+ *   PASEO_COI_DESKTOP_MCP        "1" injects the container `desktop` stdio MCP server (computer-use-linux) into
+ *                                `session/new`, `session/load`, and `session/resume` requests
+ *   PASEO_COI_SEED               named browser seed for coi-desktop (default: empty = no seed)
+ *   PASEO_COI_DESKTOP_BIN        path to coi-desktop launcher (default: ${COI_HOME:-$HOME/.coi}/bin/coi-desktop)
+ */
+
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline");
 const { spawn, execFileSync } = require("node:child_process");
+
+const DEFAULT_ACP_ARGV = [
+  "agy",
+  "acp",
+  "--dangerously-skip-permissions",
+  "--disable-telemetry",
+];
+
+const DEFAULT_FORWARD_ENV_VARS = [
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "GOOGLE_CLOUD_PROJECT",
+  "GOOGLE_CLOUD_LOCATION",
+  "NO_BROWSER",
+];
+
+function resolveAcpArgv() {
+  const raw = process.env.PASEO_COI_ACP_ARGV;
+  if (raw === undefined) {
+    return DEFAULT_ACP_ARGV;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    process.stderr.write("Invalid PASEO_COI_ACP_ARGV: must be a non-empty JSON array of strings\n");
+    process.exit(2);
+  }
+  if (
+    !Array.isArray(parsed) ||
+    parsed.length === 0 ||
+    !parsed.every((item) => typeof item === "string") ||
+    parsed[0].length === 0
+  ) {
+    process.stderr.write("Invalid PASEO_COI_ACP_ARGV: must be a non-empty JSON array of strings\n");
+    process.exit(2);
+  }
+  return parsed;
+}
+
+function resolveForwardEnvVars() {
+  const raw = process.env.PASEO_COI_FORWARD_ENV;
+  if (raw === undefined) {
+    return DEFAULT_FORWARD_ENV_VARS;
+  }
+  return raw
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
 
 function resolvePaseoHome() {
   const envHome = process.env.PASEO_HOME;
@@ -18,20 +85,42 @@ function resolvePaseoHome() {
   return path.resolve(__dirname, "..");
 }
 
+function resolveDesktopBin() {
+  const override = (process.env.PASEO_COI_DESKTOP_BIN || "").trim();
+  if (override) {
+    return override;
+  }
+  const coiHome = (process.env.COI_HOME || "").trim() || path.join(os.homedir(), ".coi");
+  return path.join(coiHome, "bin", "coi-desktop");
+}
+
+function assertExecutableFile(filePath) {
+  try {
+    if (!fs.statSync(filePath).isFile()) {
+      throw new Error("not a regular file");
+    }
+    fs.accessSync(filePath, fs.constants.X_OK);
+  } catch {
+    process.stderr.write(
+      `coi-desktop launcher is missing or not executable: ${filePath} (run coi/install.sh)\n`
+    );
+    process.exit(1);
+  }
+}
+
+const ACP_ARGV = resolveAcpArgv();
+const COI_PROFILE = (process.env.PASEO_COI_PROFILE || "").trim() || "agy";
+const COI_SEED = (process.env.PASEO_COI_SEED || "").trim();
+const DESKTOP_BIN = COI_SEED ? resolveDesktopBin() : null;
+const FORWARD_ENV_VARS = resolveForwardEnvVars();
+const STRIP_THOUGHT_LEVEL = process.env.PASEO_COI_STRIP_THOUGHT_LEVEL !== "0";
+const DESKTOP_MCP = process.env.PASEO_COI_DESKTOP_MCP === "1";
+
 const PASEO_HOME = resolvePaseoHome();
-const CACHE_DIR = path.join(PASEO_HOME, "coi-agy");
+const CACHE_DIR = path.join(PASEO_HOME, `coi-${COI_PROFILE}`);
 const PROBE_WORKSPACE = path.join(CACHE_DIR, "probe-workspace");
 const VERSION_FILE = path.join(CACHE_DIR, "version.txt");
 const INIT_CACHE_FILE = path.join(CACHE_DIR, "acp-init-result.json");
-const COI_PROFILE = "agy";
-
-const FORWARD_ENV_VARS = [
-  "GEMINI_API_KEY",
-  "GOOGLE_API_KEY",
-  "GOOGLE_CLOUD_PROJECT",
-  "GOOGLE_CLOUD_LOCATION",
-  "NO_BROWSER",
-];
 
 function ensureCacheDirs() {
   fs.mkdirSync(PROBE_WORKSPACE, { recursive: true });
@@ -80,7 +169,7 @@ if (process.argv.includes("--version")) {
   ensureCacheDirs();
   const out = execFileSync(
     "coi",
-    ["run", "--profile", COI_PROFILE, "-w", PROBE_WORKSPACE, "--", "agy", "--version"],
+    ["run", "--profile", COI_PROFILE, "-w", PROBE_WORKSPACE, "--", ACP_ARGV[0], "--version"],
     { encoding: "utf8" }
   );
   const version = out.trim();
@@ -95,6 +184,10 @@ if (process.argv.includes("--version")) {
     process.stdout.write(out);
   }
   process.exit(0);
+}
+
+if (COI_SEED) {
+  assertExecutableFile(DESKTOP_BIN);
 }
 
 ensureCacheDirs();
@@ -113,6 +206,48 @@ const SESSION_METHODS = new Set([
   "session/load",
   "session/resume",
 ]);
+
+function injectDesktopMcp(msg) {
+  if (!DESKTOP_MCP || !msg || typeof msg !== "object" || !SESSION_METHODS.has(msg.method)) {
+    return false;
+  }
+  if (msg.params === undefined || msg.params === null) {
+    msg.params = {};
+  } else if (typeof msg.params !== "object" || Array.isArray(msg.params)) {
+    return false;
+  }
+  if (msg.params.mcpServers === undefined || msg.params.mcpServers === null) {
+    msg.params.mcpServers = [];
+  } else if (!Array.isArray(msg.params.mcpServers)) {
+    return false;
+  }
+  if (msg.params.mcpServers.some((s) => s && s.name === "desktop")) {
+    return false;
+  }
+  msg.params.mcpServers.push({
+    name: "desktop",
+    command: "/usr/local/bin/desktop-mcp",
+    args: [],
+    env: [],
+  });
+  return true;
+}
+
+function transformClientLine(line) {
+  if (!DESKTOP_MCP || !line.includes('"session/')) {
+    return line;
+  }
+  let msg = null;
+  try {
+    msg = JSON.parse(line);
+  } catch {
+    return line;
+  }
+  if (injectDesktopMcp(msg)) {
+    return JSON.stringify(msg);
+  }
+  return line;
+}
 
 let savedInitReq = null;
 let cachedInitReplied = false;
@@ -153,20 +288,19 @@ function startCoiForMessage(msg) {
   if (rewrittenCwd && msg && msg.params && typeof msg.params === "object") {
     msg.params.cwd = rewrittenCwd;
   }
+  injectDesktopMcp(msg);
 
   const envArgs = buildEnvArgs();
   const coiArgs = ["run", "--profile", COI_PROFILE, "-w", ws, "--"];
   if (envArgs.length > 0) {
     coiArgs.push("env", ...envArgs);
   }
-  coiArgs.push(
-    "agy",
-    "acp",
-    "--dangerously-skip-permissions",
-    "--disable-telemetry"
-  );
+  coiArgs.push(...ACP_ARGV);
 
-  child = spawn("coi", coiArgs, {
+  const spawnCmd = COI_SEED ? DESKTOP_BIN : "coi";
+  const spawnArgs = COI_SEED ? ["run", "--seed", COI_SEED, "--", ...coiArgs] : coiArgs;
+
+  child = spawn(spawnCmd, spawnArgs, {
     stdio: ["pipe", "pipe", "pipe"],
   });
 
@@ -175,7 +309,7 @@ function startCoiForMessage(msg) {
   });
 
   child.on("error", (err) => {
-    process.stderr.write(`Failed to spawn coi: ${err.message}\n`);
+    process.stderr.write(`Failed to spawn ${spawnCmd}: ${err.message}\n`);
     process.exit(1);
   });
 
@@ -194,7 +328,7 @@ function startCoiForMessage(msg) {
 
   childRl.on("line", (line) => {
     let parsed = null;
-    if (!initHandshaken || line.includes("configOptions")) {
+    if (!initHandshaken || (STRIP_THOUGHT_LEVEL && line.includes("configOptions"))) {
       try {
         parsed = JSON.parse(line);
       } catch {
@@ -227,7 +361,7 @@ function startCoiForMessage(msg) {
       return;
     }
 
-    if (parsed && stripThoughtLevelOption(parsed)) {
+    if (STRIP_THOUGHT_LEVEL && parsed && stripThoughtLevelOption(parsed)) {
       process.stdout.write(JSON.stringify(parsed) + "\n");
       return;
     }
@@ -258,10 +392,11 @@ stdinRl.on("line", (line) => {
   }
 
   if (child) {
+    const outLine = transformClientLine(line);
     if (initHandshaken) {
-      child.stdin.write(line + "\n");
+      child.stdin.write(outLine + "\n");
     } else {
-      pendingForChild.push(line);
+      pendingForChild.push(outLine);
     }
     return;
   }

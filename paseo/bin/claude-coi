@@ -32,10 +32,29 @@ if [ -z "$ws" ] || [ "$ws" = "/" ] || [ ! -d "$ws" ]; then
   ws="/tmp"
 fi
 
+# Environment variables (all optional; defaults match the `claude` coi profile):
+#   PASEO_COI_PROFILE      coi profile to run (default: claude)
+#   PASEO_COI_MCP_CONFIG   in-container path passed to claude via --mcp-config
+#   PASEO_COI_SEED         named browser seed for coi-desktop (default: empty = none)
+#   PASEO_COI_DESKTOP_BIN  path to coi-desktop launcher (default: ${COI_HOME:-$HOME/.coi}/bin/coi-desktop)
+#
 # Forward Paseo/Claude SDK environment variables into the container without
 # passing host CLAUDE_CONFIG_DIR (container claude uses /home/code/.claude,
-# whose projects/ dir is bind-mounted by the `claude` coi profile from
-# $COI_HOME/state/claude/projects).
+# whose projects/ dir is bind-mounted by the selected coi profile, e.g.
+# `claude` or `claude-desktop`, from $COI_HOME/state/claude/projects).
+coi_profile="${PASEO_COI_PROFILE:-claude}"
+coi_seed="${PASEO_COI_SEED:-}"
+
+coi_cmd=(coi)
+if [ -n "$coi_seed" ]; then
+  desktop_bin="${PASEO_COI_DESKTOP_BIN:-${COI_HOME:-${HOME:-}/.coi}/bin/coi-desktop}"
+  if [ ! -f "$desktop_bin" ] || [ ! -x "$desktop_bin" ]; then
+    printf 'coi-desktop launcher is missing or not executable: %s (run coi/install.sh)\n' "$desktop_bin" >&2
+    exit 1
+  fi
+  coi_cmd=("$desktop_bin" run --seed "$coi_seed" --)
+fi
+
 env_args=()
 for var in \
   CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS \
@@ -63,8 +82,14 @@ do
   fi
 done
 
+claude_cmd=(claude)
+if [ -n "${PASEO_COI_MCP_CONFIG:-}" ]; then
+  claude_cmd+=(--mcp-config "$PASEO_COI_MCP_CONFIG")
+fi
+claude_cmd+=("$@")
+
 if [ "${#env_args[@]}" -gt 0 ]; then
-  exec coi run --profile claude -w "$ws" -- env "${env_args[@]}" claude "$@"
+  exec "${coi_cmd[@]}" run --profile "$coi_profile" -w "$ws" -- env "${env_args[@]}" "${claude_cmd[@]}"
 else
-  exec coi run --profile claude -w "$ws" -- claude "$@"
+  exec "${coi_cmd[@]}" run --profile "$coi_profile" -w "$ws" -- "${claude_cmd[@]}"
 fi

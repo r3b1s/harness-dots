@@ -7,5 +7,5 @@
 .config.json.*
 .paseo-*
 
-# agy-coi host-side ACP adapter cache (version.txt, acp-init-result.json, probe-workspace)
-coi-agy/
+# agy-coi host-side ACP adapter caches (per coi profile: version.txt, acp-init-result.json, probe-workspace)
+coi-*/

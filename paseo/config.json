@@ -80,6 +80,72 @@
         "paseoTools": {
           "enabled": false
         }
+      },
+      "claude-coi-desktop": {
+        "extends": "claude",
+        "label": "Claude (coi desktop)",
+        "description": "Claude Code wrapped with coi using the coi-desktop container image with computer use",
+        "command": [
+          "$PASEO_HOME/bin/claude-coi"
+        ],
+        "env": {
+          "CLAUDE_CONFIG_DIR": "$COI_HOME/state/claude",
+          "PASEO_COI_PROFILE": "claude-desktop",
+          "PASEO_COI_MCP_CONFIG": "/etc/desktop/claude-mcp.json"
+        },
+        "paseoTools": {
+          "enabled": false
+        }
+      },
+      "agy-coi-desktop": {
+        "extends": "acp",
+        "label": "Antigravity (coi desktop)",
+        "description": "Antigravity CLI (ACP) wrapped with coi using the coi-agy-desktop container image with computer use",
+        "command": [
+          "$PASEO_HOME/bin/agy-coi"
+        ],
+        "env": {
+          "PASEO_COI_PROFILE": "agy-desktop",
+          "PASEO_COI_DESKTOP_MCP": "1"
+        },
+        "options": {
+          "clientCapabilities": {
+            "fs": {
+              "readTextFile": false,
+              "writeTextFile": false
+            },
+            "terminal": false
+          }
+        },
+        "paseoTools": {
+          "enabled": false
+        }
+      },
+      "commandcode-coi-desktop": {
+        "extends": "acp",
+        "label": "Command Code (coi desktop)",
+        "description": "Command Code CLI (ACP) wrapped with coi using the coi-agy-desktop container image with computer use",
+        "command": [
+          "$PASEO_HOME/bin/agy-coi"
+        ],
+        "env": {
+          "PASEO_COI_PROFILE": "commandcode-desktop",
+          "PASEO_COI_ACP_ARGV": "[\"cmd\",\"acp\"]",
+          "PASEO_COI_FORWARD_ENV": "",
+          "PASEO_COI_STRIP_THOUGHT_LEVEL": "0"
+        },
+        "options": {
+          "clientCapabilities": {
+            "fs": {
+              "readTextFile": false,
+              "writeTextFile": false
+            },
+            "terminal": false
+          }
+        },
+        "paseoTools": {
+          "enabled": false
+        }
       }
     }
   },
